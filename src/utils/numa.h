@@ -1,6 +1,6 @@
 /*
   This file is part of Leela Chess Zero.
-  Copyright (C) 2020 The LCZero Authors
+  Copyright (C) 2020-2021 The LCZero Authors
 
   Leela Chess is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <map>
+
 namespace lczero {
 
 class Numa {
@@ -34,13 +36,20 @@ class Numa {
   Numa() = delete;
 
   // Initialize and display statistics about processor configuration.
-  static void Init();
+  static void Init(int x);
 
   // Bind thread to processor group.
   static void BindThread(int id);
 
  private:
-  static int threads_per_core_;
+  struct Group {
+    int cores;
+    int threads;
+    uint64_t mask;
+  };
+  static std::map<int, Group> groups;
+  static int thread_count;
+  static int core_count;
 };
 
 }  // namespace lczero

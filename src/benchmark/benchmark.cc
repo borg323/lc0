@@ -45,6 +45,7 @@ const OptionId kMovetimeId{"movetime", "",
 const OptionId kFenId{"fen", "", "Benchmark position FEN."};
 const OptionId kNumPositionsId{"num-positions", "",
                                "The number of benchmark positions to test."};
+const OptionId kEfficiencyClassId{"efficiency-class", "", ""};
 }  // namespace
 
 void Benchmark::Run() {
@@ -58,11 +59,15 @@ void Benchmark::Run() {
   options.Add<IntOption>(kMovetimeId, -1, 999999999) = 10000;
   options.Add<StringOption>(kFenId) = "";
   options.Add<IntOption>(kNumPositionsId, 1, 34) = 34;
+  options.Add<IntOption>(kEfficiencyClassId, 0, 1) = 0;
 
   if (!options.ProcessAllFlags()) return;
 
   try {
     auto option_dict = options.GetOptionsDict();
+
+    Numa::Init(option_dict.Get<int>(kEfficiencyClassId));
+    Numa::BindThread(0);
 
     auto network = NetworkFactory::LoadNetwork(option_dict);
 

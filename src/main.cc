@@ -46,8 +46,6 @@ int main(int argc, const char** argv) {
        << " built " << __DATE__;
 
   try {
-    Numa::Init();
-    Numa::BindThread(0);
     InitializeMagicBitboards();
 
     CommandLine::Init(argc, argv);
@@ -58,6 +56,8 @@ int main(int argc, const char** argv) {
 
     if (CommandLine::ConsumeCommand("selfplay")) {
       // Selfplay mode.
+      Numa::Init(0);
+      Numa::BindThread(0);
       SelfPlayLoop loop;
       loop.RunLoop();
     } else if (CommandLine::ConsumeCommand("benchmark")) {
@@ -66,12 +66,16 @@ int main(int argc, const char** argv) {
       benchmark.Run();
     } else if (CommandLine::ConsumeCommand("backendbench")) {
       // Backend Benchmark mode.
+      Numa::Init(0);
+      Numa::BindThread(0);
       BackendBenchmark benchmark;
       benchmark.Run();
     } else {
       // Consuming optional "uci" mode.
       CommandLine::ConsumeCommand("uci");
       // Ordinary UCI engine.
+      Numa::Init(0);
+      Numa::BindThread(0);
       EngineLoop loop;
       loop.RunLoop();
     }
