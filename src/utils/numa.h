@@ -43,11 +43,13 @@ class Numa {
 
  private:
   struct Group {
+    int efficiency_class;
     int cores;
     int threads;
+    int group_id;
     uint64_t mask;
   };
-  static std::map<int, Group> groups;
+  static std::map<uint32_t, Group> groups;
   static int thread_count;
   static int core_count;
 };

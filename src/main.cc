@@ -56,7 +56,7 @@ int main(int argc, const char** argv) {
 
     if (CommandLine::ConsumeCommand("selfplay")) {
       // Selfplay mode.
-      Numa::Init(0);
+      Numa::Init(-1);
       Numa::BindThread(0);
       SelfPlayLoop loop;
       loop.RunLoop();
@@ -66,7 +66,7 @@ int main(int argc, const char** argv) {
       benchmark.Run();
     } else if (CommandLine::ConsumeCommand("backendbench")) {
       // Backend Benchmark mode.
-      Numa::Init(0);
+      Numa::Init(-1);
       Numa::BindThread(0);
       BackendBenchmark benchmark;
       benchmark.Run();
@@ -74,7 +74,7 @@ int main(int argc, const char** argv) {
       // Consuming optional "uci" mode.
       CommandLine::ConsumeCommand("uci");
       // Ordinary UCI engine.
-      Numa::Init(0);
+      Numa::Init(-1);
       Numa::BindThread(0);
       EngineLoop loop;
       loop.RunLoop();

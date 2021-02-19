@@ -36,7 +36,7 @@
 
 namespace lczero {
 
-std::map<int, Numa::Group> Numa::groups = {};
+std::map<uint32_t, Numa::Group> Numa::groups = {};
 int Numa::thread_count = 0;
 int Numa::core_count = 0;
 
@@ -54,32 +54,37 @@ void Numa::Init(int x) {
   for (int offset = 0; offset < len;) {
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX* info =
         (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*)((char*)buffer + offset);
-    if (info->Processor.EfficiencyClass == x) {
-      int group = info->Processor.GroupMask[0].Group;
-      if (groups.find(group) == groups.end()) {
+    int efficiency_class = info->Processor.EfficiencyClass;
+    if (efficiency_class != x) {
+      int group_id = info->Processor.GroupMask[0].Group;
+      int threads = BitBoard(info->Processor.GroupMask[0].Mask).count();
+
+      uint32_t key =
+          ((255 - efficiency_class) << 24) | (threads << 16) | group_id;
+      if (groups.find(key) == groups.end()) {
         Group tmp = {};
-        groups.emplace(group, tmp);
+        groups.emplace(key, tmp);
         group_count++;
       }
-      int threads = BitBoard(info->Processor.GroupMask[0].Mask).count();
       thread_count += threads;
       core_count++;
-      groups[group].cores++;
-      groups[group].threads += threads;
-      groups[group].mask |= info->Processor.GroupMask[0].Mask;
+      groups[key].efficiency_class = efficiency_class;
+      groups[key].cores++;
+      groups[key].threads += threads;
+      groups[key].group_id = group_id;
+      groups[key].mask |= info->Processor.GroupMask[0].Mask;
     }
     offset += info->Size;
   }
   free(buffer);
 
   CERR << "Detected " << core_count << " core(s) and " << thread_count
-       << " thread(s) in " << group_count << " group(s).";
+       << " thread(s)";
 
-  for (int group_id = 0; group_id < group_count; group_id++) {
-    int group_threads = groups[group_id].threads;
-    int group_cores = groups[group_id].cores;
-    CERR << "Group " << group_id << " has " << group_cores << " core(s) and "
-         << group_threads << " thread(s).";
+  for (auto const & [ _, grp ] : groups) {
+    CERR << "Group " << grp.group_id << " has " << grp.cores << " core(s) and "
+         << grp.threads << " thread(s) in efficincy class "
+         << grp.efficiency_class << ".";
   }
 #else
   // Silence warning.
@@ -89,23 +94,19 @@ void Numa::Init(int x) {
 
 void Numa::BindThread(int id) {
 #if defined(_WIN64) && _WIN32_WINNT >= 0x0601
-  int group_count = groups.size();
-
   int core_id = id;
   GROUP_AFFINITY affinity = {};
-  for (int group_id = 0; group_id < group_count; group_id++) {
-    int group_threads = groups[group_id].threads;
-    int group_cores = groups[group_id].cores;
-    // Allocate cores of each group in order, and distribute remaining threads
-    // to all groups.
-    if ((id < core_count && core_id < group_cores) ||
-        (id >= core_count && (id - core_count) % group_count == group_id)) {
-      affinity.Group = group_id;
-      affinity.Mask = groups[group_id].mask;
+  // Once for cores.
+  for (auto const & [ _, grp ] : groups) {
+    // Allocate cores of each group in order, and (FIXME) remaining to first
+    // group.
+    if ((id < core_count && core_id < grp.cores) || id >= core_count) {
+      affinity.Group = grp.group_id;
+      affinity.Mask = grp.mask;
       SetThreadGroupAffinity(GetCurrentThread(), &affinity, NULL);
       break;
     }
-    core_id -= group_cores;
+    core_id -= grp.cores;
   }
 #else
   // Silence warning.
