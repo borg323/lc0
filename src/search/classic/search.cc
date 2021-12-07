@@ -1063,10 +1063,9 @@ void Search::Wait() {
 
 void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
   for (auto& entry : shared_collisions_) {
-    Node* node = entry.first;
-    for (node = node->GetParent(); node != root_node_->GetParent();
-         node = node->GetParent()) {
-      node->CancelScoreUpdate(entry.second);
+    auto path = entry.first;
+    for (auto it = ++(path.crbegin()); it != path.crend(); ++it) {
+      (*it)->CancelScoreUpdate(entry.second);
     }
   }
   shared_collisions_.clear();
@@ -1142,7 +1141,7 @@ void SearchWorker::RunTasks(int tid) {
     if (task != nullptr) {
       switch (task->task_type) {
         case PickTask::kGathering: {
-          PickNodesToExtendTask(task->start, task->base_depth,
+          PickNodesToExtendTask(task->start_path, task->base_depth,
                                 task->collision_limit, task->moves_to_base,
                                 &(task->results), &(task_workspaces_[tid]));
           break;
@@ -1392,11 +1391,9 @@ void SearchWorker::GatherMinibatch() {
         // This may remove too many items, but hopefully most of the time they
         // will just be added back in the same in the next gather.
         if (minibatch_[i].IsCollision()) {
-          Node* node = minibatch_[i].node;
-          for (node = node->GetParent();
-               node != search_->root_node_->GetParent();
-               node = node->GetParent()) {
-            node->CancelScoreUpdate(minibatch_[i].multivisit);
+          for (auto it = ++(minibatch_[i].path.crbegin());
+               it != minibatch_[i].path.crend(); ++it) {
+            (*it)->CancelScoreUpdate(minibatch_[i].multivisit);
           }
           minibatch_.erase(minibatch_.begin() + i);
         } else if (minibatch_[i].ooo_completed) {
@@ -1420,11 +1417,9 @@ void SearchWorker::GatherMinibatch() {
           int extra = std::min(picked_node.maxvisit, collisions_left) -
                       picked_node.multivisit;
           picked_node.multivisit += extra;
-          Node* node = picked_node.node;
-          for (node = node->GetParent();
-               node != search_->root_node_->GetParent();
-               node = node->GetParent()) {
-            node->IncrementNInFlight(extra);
+          for (auto it = ++(picked_node.path.crbegin());
+               it != picked_node.path.crend(); ++it) {
+            (*it)->IncrementNInFlight(extra);
           }
         }
         if ((collisions_left -= picked_node.multivisit) <= 0) return;
@@ -1448,7 +1443,8 @@ void SearchWorker::ProcessPickedTask(int start_idx, int end_idx,
     // of the game), it means that we already visited this node before.
     if (picked_node.IsExtendable()) {
       // Node was never visited, extend it.
-      ExtendNode(node, picked_node.depth, picked_node.moves_to_visit, &history);
+      ExtendNode(picked_node.path, picked_node.depth,
+                 picked_node.moves_to_visit, &history);
       if (!node->IsTerminal()) {
         picked_node.nn_queried = true;
         MoveList legal_moves;
@@ -1508,8 +1504,8 @@ void SearchWorker::PickNodesToExtend(int collision_limit) {
   // Since the tasks perform work which assumes they have the lock, even though
   // actually this thread does.
   SharedMutex::Lock lock(search_->nodes_mutex_);
-  PickNodesToExtendTask(search_->root_node_, 0, collision_limit, empty_movelist,
-                        &minibatch_, &main_workspace_);
+  PickNodesToExtendTask({search_->root_node_}, 0, collision_limit,
+                        empty_movelist, &minibatch_, &main_workspace_);
 
   WaitForTasks();
   for (int i = 0; i < static_cast<int>(picking_tasks_.size()); i++) {
@@ -1520,13 +1516,14 @@ void SearchWorker::PickNodesToExtend(int collision_limit) {
   }
 }
 
-void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
-                                                    int depth) {
+void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(
+    const std::vector<Node*>& path, int depth) {
   // Check whether first repetition was before root. If yes, remove
   // terminal status of node and revert all visits in the tree.
   // Length of repetition was stored in m_. This code will only do
   // something when tree is reused and twofold visits need to be
   // reverted.
+  auto child_node = path.back();
   if (child_node->IsTwoFoldTerminal() && depth < child_node->GetM()) {
     // Take a mutex - any SearchWorker specific mutex... since this is
     // not safe to do concurrently between multiple tasks.
@@ -1539,11 +1536,10 @@ void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
     const auto d = child_node->GetD();
     const auto m = child_node->GetM();
     const auto terminal_visits = child_node->GetN();
-    for (Node* node_to_revert = child_node; node_to_revert != nullptr;
-         node_to_revert = node_to_revert->GetParent()) {
+    for (auto it = path.crbegin(); it != path.crend(); ++it) {
       // Revert all visits on twofold draw when making it non terminal.
-      node_to_revert->RevertTerminalVisits(wl, d, m + (float)depth_counter,
-                                           terminal_visits);
+      (*it)->RevertTerminalVisits(wl, d, m + (float)depth_counter,
+                                  terminal_visits);
       depth_counter++;
       // Even if original tree still exists, we don't want to revert
       // more than until new root.
@@ -1562,7 +1558,7 @@ void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
 }
 
 void SearchWorker::PickNodesToExtendTask(
-    Node* node, int base_depth, int collision_limit,
+    const std::vector<Node*>& path, int base_depth, int collision_limit,
     const std::vector<Move>& moves_to_base,
     std::vector<NodeToProcess>* receiver,
     TaskWorkspace* workspace) NO_THREAD_SAFETY_ANALYSIS {
@@ -1579,6 +1575,10 @@ void SearchWorker::PickNodesToExtendTask(
   current_path.clear();
   auto& moves_to_path = workspace->moves_to_path;
   moves_to_path = moves_to_base;
+  auto& full_path = workspace->full_path;
+  full_path = path;
+  assert(full_path.size() > 0);
+  Node* node = full_path.back();
   // Sometimes receiver is reused, othertimes not, so only jump start if small.
   if (receiver->capacity() < 30) {
     receiver->reserve(receiver->size() + 30);
@@ -1611,6 +1611,7 @@ void SearchWorker::PickNodesToExtendTask(
 
   current_path.push_back(-1);
   while (current_path.size() > 0) {
+    assert(full_path.size() >= path.size());
     // First prepare visits_to_perform.
     if (current_path.back() == -1) {
       // Need to do n visits, where n is either collision_limit, or comes from
@@ -1630,7 +1631,8 @@ void SearchWorker::PickNodesToExtendTask(
           if (node->TryStartScoreUpdate()) {
             cur_limit -= 1;
             minibatch_.push_back(NodeToProcess::Visit(
-                node, static_cast<uint16_t>(current_path.size() + base_depth)));
+                full_path,
+                static_cast<uint16_t>(current_path.size() + base_depth)));
             completed_visits++;
           }
         }
@@ -1642,11 +1644,13 @@ void SearchWorker::PickNodesToExtendTask(
             max_count = max_limit;
           }
           receiver->push_back(NodeToProcess::Collision(
-              node, static_cast<uint16_t>(current_path.size() + base_depth),
+              full_path,
+              static_cast<uint16_t>(current_path.size() + base_depth),
               cur_limit, max_count));
           completed_visits += cur_limit;
         }
-        node = node->GetParent();
+        full_path.pop_back();
+        node = full_path.back();
         current_path.pop_back();
         continue;
       }
@@ -1799,11 +1803,12 @@ void SearchWorker::PickNodesToExtendTask(
         (*visits_to_perform.back())[best_idx] += new_visits;
         cur_limit -= new_visits;
         Node* child_node = best_edge.GetOrSpawnNode(/* parent */ node);
+        full_path.push_back(child_node);
 
         // Probably best place to check for two-fold draws consistently.
         // Depth starts with 1 at root, so real depth is depth - 1.
         EnsureNodeTwoFoldCorrectForDepth(
-            child_node, current_path.size() + base_depth + 1 - 1);
+            full_path, current_path.size() + base_depth + 1 - 1);
 
         bool decremented = false;
         if (child_node->TryStartScoreUpdate()) {
@@ -1824,7 +1829,7 @@ void SearchWorker::PickNodesToExtendTask(
           // doesn't include this visit.
           (*visits_to_perform.back())[best_idx] -= 1;
           receiver->push_back(NodeToProcess::Visit(
-              child_node,
+              full_path,
               static_cast<uint16_t>(current_path.size() + 1 + base_depth)));
           completed_visits++;
           receiver->back().moves_to_visit.reserve(moves_to_path.size() + 1);
@@ -1835,6 +1840,7 @@ void SearchWorker::PickNodesToExtendTask(
             (*visits_to_perform.back())[best_idx] > 0) {
           vtp_last_filled.back() = best_idx;
         }
+        full_path.pop_back();
       }
       is_root_node = false;
       // Actively do any splits now rather than waiting for potentially long
@@ -1859,10 +1865,12 @@ void SearchWorker::PickNodesToExtendTask(
             // Ensure not to exceed size of reservation.
             if (picking_tasks_.size() < MAX_TASKS) {
               moves_to_path.push_back(cur_iters[i].GetMove());
+              full_path.push_back(child_node);
               picking_tasks_.emplace_back(
-                  child_node, current_path.size() - 1 + base_depth + 1,
+                  full_path, current_path.size() - 1 + base_depth + 1,
                   moves_to_path, child_limit);
               moves_to_path.pop_back();
+              full_path.pop_back();
               task_count_.fetch_add(1, std::memory_order_acq_rel);
               task_added_.notify_all();
               passed = true;
@@ -1891,6 +1899,7 @@ void SearchWorker::PickNodesToExtendTask(
           current_path.back() = idx;
           current_path.push_back(-1);
           node = child.GetOrSpawnNode(/* parent */ node);
+          full_path.push_back(node);
           found_child = true;
           break;
         }
@@ -1898,8 +1907,11 @@ void SearchWorker::PickNodesToExtendTask(
       }
     }
     if (!found_child) {
-      node = node->GetParent();
-      if (!moves_to_path.empty()) moves_to_path.pop_back();
+      full_path.pop_back();
+      node = full_path.back();
+      if (!moves_to_path.empty()) {
+        moves_to_path.pop_back();
+      }
       current_path.pop_back();
       vtp_buffer.push_back(std::move(visits_to_perform.back()));
       visits_to_perform.pop_back();
@@ -1908,7 +1920,7 @@ void SearchWorker::PickNodesToExtendTask(
   }
 }
 
-void SearchWorker::ExtendNode(Node* node, int depth,
+void SearchWorker::ExtendNode(const std::vector<Node*>& path, int depth,
                               const std::vector<Move>& moves_to_node,
                               PositionHistory* history) {
   // Initialize position sequence with pre-move position.
@@ -1924,6 +1936,7 @@ void SearchWorker::ExtendNode(Node* node, int depth,
 
   // Check whether it's a draw/lose by position. Importantly, we must check
   // these before doing the by-rule checks below.
+  auto node = path.back();
   if (legal_moves.empty()) {
     // Could be a checkmate or a stalemate
     if (board.IsUnderCheck()) {
@@ -1980,8 +1993,8 @@ void SearchWorker::ExtendNode(Node* node, int depth,
         // Need a lock to access parent, in case MakeSolid is in progress.
         {
           SharedMutex::SharedLock lock(search_->nodes_mutex_);
-          auto parent = node->GetParent();
-          if (parent) {
+          if (path.size() > 1) {
+            auto parent = path[path.size() - 2];
             m = std::max(0.0f, parent->GetM() - 1.0f);
           }
         }
@@ -2011,7 +2024,7 @@ void SearchWorker::CollectCollisions() {
 
   for (const NodeToProcess& node_to_process : minibatch_) {
     if (node_to_process.IsCollision()) {
-      search_->shared_collisions_.emplace_back(node_to_process.node,
+      search_->shared_collisions_.emplace_back(node_to_process.path,
                                                node_to_process.multivisit);
     }
   }
@@ -2202,7 +2215,9 @@ void SearchWorker::DoBackupUpdate() {
 
 void SearchWorker::DoBackupUpdateSingleNode(
     const NodeToProcess& node_to_process) REQUIRES(search_->nodes_mutex_) {
-  Node* node = node_to_process.node;
+  auto path = node_to_process.path;
+  auto node = node_to_process.node;
+
   if (node_to_process.IsCollision()) {
     // Collisions are handled via shared_collisions instead.
     return;
@@ -2222,8 +2237,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
   float m_delta = 0.0f;
   uint32_t solid_threshold =
       static_cast<uint32_t>(params_.GetSolidTreeThreshold());
-  for (Node *n = node, *p; n != search_->root_node_->GetParent(); n = p) {
-    p = n->GetParent();
+  for (auto it = path.crbegin(); it != path.crend();
+       /* ++it in the body */) {
+    auto n = *it;
 
     // Current node might have become terminal from some other descendant, so
     // backup the rest of the way with more accurate values.
@@ -2237,16 +2253,20 @@ void SearchWorker::DoBackupUpdateSingleNode(
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }
     if (n->GetN() >= solid_threshold) {
+#if 0  // TODO: Find a way to make this work. Is it possible to do this when
+       // nothing else has (possibly) affected paths?
       if (n->MakeSolid() && n == search_->root_node_) {
         // If we make the root solid, the current_best_edge_ becomes invalid and
         // we should repopulate it.
         search_->current_best_edge_ =
             search_->GetBestChildNoTemperature(search_->root_node_, 0);
       }
+#endif
     }
 
     // Nothing left to do without ancestors to update.
-    if (!p) break;
+    if (++it == path.crend()) break;
+    auto p = *it;
 
     bool old_update_parent_bounds = update_parent_bounds;
     // If parent already is terminal further adjustment is not required.
