@@ -370,6 +370,7 @@ class SearchWorker {
       vtp_last_filled.reserve(30);
       current_path.reserve(30);
       moves_to_path.reserve(30);
+      full_path.reserve(30);
       history.Reserve(30);
     }
   };
