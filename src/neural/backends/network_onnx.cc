@@ -876,6 +876,7 @@ std::unique_ptr<Network> MakeOnnxNetwork(const std::optional<WeightsFile>& w,
     converter_options.ir = opts.GetOrDefault<int>("ir", -1);
     converter_options.alt_mish = opts.GetOrDefault<bool>(
         "alt_mish", kProvider == OnnxProvider::CPU ? true : false);
+    converter_options.attention = opts.GetOrDefault<int>("attention", 0);
     converter_options.alt_layernorm = opts.GetOrDefault<bool>(
         "alt_layernorm", kProvider == OnnxProvider::DML ? true : false);
     converter_options.no_shape = opts.GetOrDefault<bool>("no_shape", false);

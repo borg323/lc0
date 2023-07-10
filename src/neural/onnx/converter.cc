@@ -77,8 +77,6 @@ class Converter {
   size_t NumEncBlocks() const { return src_.weights().encoder().size(); }
   void CopyGenericFields(pblczero::Net* dst);
   void GenerateOnnx(pblczero::OnnxModel* onnx);
-  void FillValueInfo(pblczero::ValueInfoProto* vip, const std::string& name,
-                     std::initializer_list<int> dims);
 
   std::string MakeConvBlock(OnnxBuilder* builder,
                             const MultiHeadWeights::ConvBlock&,
@@ -521,49 +519,106 @@ std::string Converter::MakeEncoderLayer(
     int embedding_size, int heads, const std::string& encoder_in,
     const std::string& name, ActivationFunction activation, float alpha) {
   const int d_model = layer.mha.q_b.size();
-  const int depth = d_model / heads;
-
-  auto mha_shape =
-      builder->AddInitializer("/const" + name + "/mha/shape",
-                              Int64OnnxConst({-1, 64, heads, depth}, {4}));
-  auto flow = builder->MatMul(
-      name + "/mha/Q/w", encoder_in,
-      *GetWeghtsConverter(layer.mha.q_w, {embedding_size, d_model}, {1, 0}));
-  flow = builder->Add(name + "/mha/Q/b", flow,
-                      *GetWeghtsConverter(layer.mha.q_b, {d_model}));
-  flow = builder->Reshape(name + "/mha/Q/reshape", flow, mha_shape);
-  auto Q = builder->Transpose(name + "/mha/Q/transpose", flow, {0, 2, 1, 3});
-  flow = builder->MatMul(
-      name + "/mha/K/w", encoder_in,
-      *GetWeghtsConverter(layer.mha.k_w, {embedding_size, d_model}, {1, 0}));
-  flow = builder->Add(name + "/mha/K/b", flow,
-                      *GetWeghtsConverter(layer.mha.k_b, {d_model}));
-  flow = builder->Reshape(name + "/mha/K/reshape", flow, mha_shape);
-  auto K = builder->Transpose(name + "/mha/K/transpose", flow, {0, 2, 3, 1});
-  flow = builder->MatMul(
-      name + "/mha/V/w", encoder_in,
-      *GetWeghtsConverter(layer.mha.v_w, {embedding_size, d_model}, {1, 0}));
-  flow = builder->Add(name + "/mha/V/b", flow,
-                      *GetWeghtsConverter(layer.mha.v_b, {d_model}));
-  flow = builder->Reshape(name + "/mha/V/reshape", flow, mha_shape);
-  auto V = builder->Transpose(name + "/mha/V/transpose", flow, {0, 2, 1, 3});
-  flow = builder->MatMul(name + "/mha/QK/matmul", Q, K);
-  flow = builder->Mul(name + "/mha/QK/scale", flow,
-                      *GetScalarConverter(1.0f / sqrtf(depth)));
+  std::string flow;
+  std::string smolgen_weights;
   if (layer.mha.has_smolgen) {
-    auto smolgen_weights =
+    smolgen_weights =
         MakeSmolgen(builder, layer, embedding_size, heads, encoder_in, name);
-    flow = builder->Add(name + "/smolgen_weights", flow, smolgen_weights);
   }
-  flow = builder->Softmax(name + "/mha/QK/softmax", flow, 3);
-  flow = builder->MatMul(name + "/mha/QKV/matmul", flow, V);
-  if (heads > 1) {
-    flow = builder->Transpose(name + "/mha/out/transpose", flow, {0, 2, 1, 3});
+  if (options_.attention == 0) {
+    const int depth = d_model / heads;
+    auto mha_shape =
+        builder->AddInitializer("/const" + name + "/mha/shape",
+                                Int64OnnxConst({-1, 64, heads, depth}, {4}));
+    flow = builder->MatMul(
+        name + "/mha/Q/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.q_w, {embedding_size, d_model}, {1, 0}));
+    flow = builder->Add(name + "/mha/Q/b", flow,
+                        *GetWeghtsConverter(layer.mha.q_b, {d_model}));
+    flow = builder->Reshape(name + "/mha/Q/reshape", flow, mha_shape);
+    auto Q = builder->Transpose(name + "/mha/Q/transpose", flow, {0, 2, 1, 3});
+    flow = builder->MatMul(
+        name + "/mha/K/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.k_w, {embedding_size, d_model}, {1, 0}));
+    flow = builder->Add(name + "/mha/K/b", flow,
+                        *GetWeghtsConverter(layer.mha.k_b, {d_model}));
+    flow = builder->Reshape(name + "/mha/K/reshape", flow, mha_shape);
+    auto K = builder->Transpose(name + "/mha/K/transpose", flow, {0, 2, 3, 1});
+    flow = builder->MatMul(
+        name + "/mha/V/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.v_w, {embedding_size, d_model}, {1, 0}));
+    flow = builder->Add(name + "/mha/V/b", flow,
+                        *GetWeghtsConverter(layer.mha.v_b, {d_model}));
+    flow = builder->Reshape(name + "/mha/V/reshape", flow, mha_shape);
+    auto V = builder->Transpose(name + "/mha/V/transpose", flow, {0, 2, 1, 3});
+    flow = builder->MatMul(name + "/mha/QK/matmul", Q, K);
+    flow = builder->Mul(name + "/mha/QK/scale", flow,
+                        *GetScalarConverter(1.0f / sqrtf(depth)));
+    if (layer.mha.has_smolgen) {
+      flow = builder->Add(name + "/smolgen_weights", flow, smolgen_weights);
+    }
+    flow = builder->Softmax(name + "/mha/QK/softmax", flow, 3);
+    flow = builder->MatMul(name + "/mha/QKV/matmul", flow, V);
+    if (heads > 1) {
+      flow =
+          builder->Transpose(name + "/mha/out/transpose", flow, {0, 2, 1, 3});
+    }
+    flow = builder->Reshape(
+        name + "/mha/out/reshape", flow,
+        builder->AddInitializer("/const" + name + "/mha/out/shape",
+                                Int64OnnxConst({-1, d_model}, {2})));
+  } else if (options_.attention == 1) {
+    flow = builder->Reshape(
+        name + "/mha/in/reshape", encoder_in,
+        builder->AddInitializer("/const" + name + "/mha/in/shape",
+                                Int64OnnxConst({-1, 64, d_model}, {3})));
+    auto merge_w = layer.mha.q_w;
+    merge_w.insert(merge_w.end(), layer.mha.k_w.begin(), layer.mha.k_w.end());
+    merge_w.insert(merge_w.end(), layer.mha.v_w.begin(), layer.mha.v_w.end());
+    auto merge_b = layer.mha.q_b;
+    merge_b.insert(merge_b.end(), layer.mha.k_b.begin(), layer.mha.k_b.end());
+    merge_b.insert(merge_b.end(), layer.mha.v_b.begin(), layer.mha.v_b.end());
+    flow = builder->Attention(
+        name + "/mha", flow,
+        builder->AddInitializer(
+            name + "/mha/QKV/w",
+            *GetWeghtsConverter(merge_w, {embedding_size, 3 * d_model},
+                                {1, 0})),
+        builder->AddInitializer(name + "/mha/QKV/b",
+                                *GetWeghtsConverter(merge_b, {3 * d_model})),
+        smolgen_weights, heads);
+    flow = builder->Reshape(
+        name + "/mha/out/reshape", flow,
+        builder->AddInitializer("/const" + name + "/mha/out/shape",
+                                Int64OnnxConst({-1, d_model}, {2})));
+  } else {
+    auto mha_shape = builder->AddInitializer(
+        "/const" + name + "/mha/shape", Int64OnnxConst({-1, 64, d_model}, {3}));
+    flow = builder->MatMul(
+        name + "/mha/Q/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.q_w, {embedding_size, d_model}, {1, 0}));
+    auto Q = builder->Reshape(name + "/mha/Q/reshape", flow, mha_shape);
+    flow = builder->MatMul(
+        name + "/mha/K/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.k_w, {embedding_size, d_model}, {1, 0}));
+    auto K = builder->Reshape(name + "/mha/K/reshape", flow, mha_shape);
+    flow = builder->MatMul(
+        name + "/mha/V/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.v_w, {embedding_size, d_model}, {1, 0}));
+    auto V = builder->Reshape(name + "/mha/V/reshape", flow, mha_shape);
+    auto merge_b = layer.mha.q_b;
+    merge_b.insert(merge_b.end(), layer.mha.k_b.begin(), layer.mha.k_b.end());
+    merge_b.insert(merge_b.end(), layer.mha.v_b.begin(), layer.mha.v_b.end());
+    flow = builder->MultiHeadAttention(
+        name + "/mha", Q, K, V,
+        builder->AddInitializer(name + "/mha/QKV/b",
+                                *GetWeghtsConverter(merge_b, {3 * d_model})),
+        smolgen_weights, heads);
+    flow = builder->Reshape(
+        name + "/mha/out/reshape", flow,
+        builder->AddInitializer("/const" + name + "/mha/out/shape",
+                                Int64OnnxConst({-1, d_model}, {2})));
   }
-  flow = builder->Reshape(
-      name + "/mha/out/reshape", flow,
-      builder->AddInitializer("/const" + name + "/mha/out/shape",
-                              Int64OnnxConst({-1, d_model}, {2})));
   flow =
       builder->MatMul(name + "/mha/out/dense/w", flow,
                       *GetWeghtsConverter(layer.mha.dense_w,

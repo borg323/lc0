@@ -484,4 +484,49 @@ std::string OnnxBuilder::ReduceMean(const std::string& name,
   return out;
 }
 
+std::string OnnxBuilder::Attention(const std::string& name,
+                                   const std::string& input,
+                                   const std::string& weights,
+                                   const std::string& bias,
+                                   const std::string& attention_bias,
+                                   int heads) {
+  if (import_com_microsoft_) {
+    auto opset = model_.add_opset_import();
+    opset->set_domain("com.microsoft");
+    opset->set_version(1);
+    import_com_microsoft_ = false;
+  }
+  auto* node = model_.mutable_graph()->add_node();
+  node->set_domain("com.microsoft");
+  auto out = PopulateStdNodeFields(node, name, input, "Attention");
+  node->add_input(weights);
+  node->add_input(bias);
+  node->add_input({});
+  node->add_input({});
+  node->add_input(attention_bias);
+  AddIntAttribute(node, "num_heads", heads);
+  return out;
+}
+
+std::string OnnxBuilder::MultiHeadAttention(
+    const std::string& name, const std::string& Q, const std::string& K,
+    const std::string& V, const std::string& bias,
+    const std::string& attention_bias, int heads) {
+  if (import_com_microsoft_) {
+    auto opset = model_.add_opset_import();
+    opset->set_domain("com.microsoft");
+    opset->set_version(1);
+    import_com_microsoft_ = false;
+  }
+  auto* node = model_.mutable_graph()->add_node();
+  node->set_domain("com.microsoft");
+  auto out = PopulateStdNodeFields(node, name, Q, "MultiHeadAttention");
+  node->add_input(K);
+  node->add_input(V);
+  node->add_input(bias);
+  node->add_input({});
+  node->add_input(attention_bias);
+  AddIntAttribute(node, "num_heads", heads);
+  return out;
+}
 }  // namespace lczero
