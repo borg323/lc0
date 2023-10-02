@@ -250,6 +250,15 @@ if get_option('dag_classic')
     'src/search/dag_classic/wrapper.cc',
   ]
 
+  ## ~~~~~~~~~~
+  ## Transposition table
+  ## ~~~~~~~~~~
+  fix_tt = get_option('fixed_tt')
+  if fix_tt
+    # Change transposition table to a fixed size one.
+    add_project_arguments('-DFIX_TT', language : 'cpp')
+  endif
+
   absl = subproject('abseil-cpp', default_options : ['warning_level=0', 'cpp_std=c++20'])
   deps += absl.get_variable('absl_container_dep').as_system()
 endif
