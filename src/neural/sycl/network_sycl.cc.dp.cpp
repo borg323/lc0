@@ -238,7 +238,7 @@ class SyclNetwork : public Network {
     device_ = sycl_queue_->get_device();
   
     // Get the number of compute units(execution units).
-    sm_count_ = device_.get_info<sycl::info::device::max_compute_units>();
+    compute_units_ = device_.get_info<sycl::info::device::max_compute_units>();
 
     // layout used by cuda backend is nchw.
     has_tensor_cores_ = false;
@@ -931,7 +931,7 @@ class SyclNetwork : public Network {
   int GetMiniBatchSize() const override {
      if (device_.is_cpu()) { return 7;}
     // Simple heuristic that seems to work for a wide range of GPUs.
-    return 2 * sm_count_;
+    return 2 * compute_units_;
   }
 
   std::unique_ptr<NetworkComputation> NewComputation() override {
@@ -971,7 +971,7 @@ class SyclNetwork : public Network {
   int gpu_id_;
   int l2_cache_size_;
   int max_batch_size_;
-  int sm_count_;
+  int compute_units_;
   bool wdl_;
   bool moves_left_;
   bool use_res_block_winograd_fuse_opt_;  // fuse operations inside the residual
