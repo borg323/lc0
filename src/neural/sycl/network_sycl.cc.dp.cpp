@@ -925,6 +925,7 @@ class SyclNetwork : public Network {
   // Check if device is the cpu for thread handling.
   bool IsCpu() const override { return device_.is_cpu(); }
   
+  // For now its just 2 threads will add for multiple gpu's. 
   int GetThreads() const override { return 2 /*+ total_gpus_*/; }
   
   int GetMiniBatchSize() const override {
