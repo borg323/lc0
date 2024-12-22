@@ -233,6 +233,12 @@ class SyclNetwork : public Network {
 
     // Select GPU to run on (for *the current* thread).
     multi_stream_ = options.GetOrDefault<bool>("multi_stream", false);
+    
+    // Get the sycl device.
+    device_ = sycl_queue_->get_device();
+  
+    // Get the number of compute units(execution units).
+    sm_count_ = device_.get_info<sycl::info::device::max_compute_units>();
 
     // layout used by cuda backend is nchw.
     has_tensor_cores_ = false;
@@ -915,6 +921,17 @@ class SyclNetwork : public Network {
   const NetworkCapabilities& GetCapabilities() const override {
     return capabilities_;
   }
+  
+  // Check if device is the cpu for thread handling.
+  bool IsCpu() const override { return device_.is_cpu(); }
+  
+  int GetThreads() const override { return 2 /*+ total_gpus_*/; }
+  
+  int GetMiniBatchSize() const override {
+     if (device_.is_cpu()) { return 7;}
+    // Simple heuristic that seems to work for a wide range of GPUs.
+    return 2 * sm_count_;
+  }
 
   std::unique_ptr<NetworkComputation> NewComputation() override {
     // Set correct gpu id for this computation (as it might have been called
@@ -953,6 +970,7 @@ class SyclNetwork : public Network {
   int gpu_id_;
   int l2_cache_size_;
   int max_batch_size_;
+  int sm_count_;
   bool wdl_;
   bool moves_left_;
   bool use_res_block_winograd_fuse_opt_;  // fuse operations inside the residual
@@ -964,6 +982,7 @@ class SyclNetwork : public Network {
   // by allocating more memory).
   mutable std::mutex lock_;
   sycl::queue * sycl_queue_;
+  sycl::device device_;
 
 
   int numBlocks_;
