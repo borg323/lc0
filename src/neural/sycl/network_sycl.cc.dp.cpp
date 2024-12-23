@@ -202,7 +202,7 @@ class SyclNetwork : public Network {
 
     max_batch_size_ = options.GetOrDefault<int>("max_batch", 1024);
 
-    // Create a vector to store the SYCL devices
+    // A vector to store sycl devices.
     std::vector<sycl::device> devices;
 
     // Get all the available platforms
@@ -223,16 +223,16 @@ class SyclNetwork : public Network {
     
     // Get the sycl device.
     device_ = devices[gpu_id_];
+    // Device context.
+    sycl::context context{device_};
   
     // Get the number of compute units(execution units).
     compute_units_ = device_.get_info<sycl::info::device::max_compute_units>();
 
-    sycl::context context{device_};
-
     if (gpu_id_ >= (int)devices.size())
       throw Exception("Invalid GPU Id: " + std::to_string(gpu_id_));
     
-    sycl_queue_ = new sycl::queue{context, device_, [] (sycl::exception_list exceptions) {
+    auto exceptions_handler = [&] (sycl::exception_list exceptions) {
         for (std::exception_ptr const& e : exceptions) {
            try {
                std::rethrow_exception(e);
@@ -241,9 +241,13 @@ class SyclNetwork : public Network {
                 << "Caught asynchronous SYCL exception during GEMM:\n" 
                 << e.what() 
                 << std::endl;
+                std::terminate();
             }
         }
-    }, sycl::property_list{sycl::property::queue::in_order{}} };
+    };
+    
+    sycl_queue_ = new sycl::queue{context, device_, 
+              exceptions_handler, sycl::property_list{sycl::property::queue::in_order{}} };
 
     showDeviceInfo(*sycl_queue_);
 
@@ -940,10 +944,10 @@ class SyclNetwork : public Network {
   bool IsCpu() const override { return device_.is_cpu(); }
   
   // 2 threads for cpu and 1 + total_gpu's for the multiple gpu's. 
-  int GetThreads() const override { return device_.is_gpu() ? 1 + total_gpus_ : 2; }
+  int GetThreads() const override { return device_.is_gpu() ? 1 + total_gpus_ : 1; }
   
   int GetMiniBatchSize() const override {
-     if (device_.is_cpu()) { return 7;}
+     if (device_.is_cpu()) { return 7; }
     // Simple heuristic that seems to work for a wide range of GPUs.
     return 2 * compute_units_;
   }
@@ -956,7 +960,7 @@ class SyclNetwork : public Network {
     Adjust the selected device if needed.
     */
     //dpct::select_device(gpu_id_);
-    device_;
+    dpct::select_device(gpu_id_);
     return std::make_unique<SyclNetworkComputation<DataType>>(this, wdl_,
                                                               moves_left_);
   }
@@ -1039,7 +1043,7 @@ class SyclNetwork : public Network {
               << mqueue.get_device().get_platform().get_info<sycl::info::platform::name>() 
               << std::endl;
     // Device name
-    std::string device_type = mqueue.get_device().is_gpu() ? "GPU" : "CPU"
+    std::string device_type = mqueue.get_device().is_gpu() ? "GPU" : "CPU";
     std::cerr << device_type << ": " 
               << mqueue.get_device().get_info<sycl::info::device::name>() 
               << std::endl;
@@ -1049,7 +1053,7 @@ class SyclNetwork : public Network {
               << " MB" 
               << std::endl;
     // Device clock frequency (max_clock_frequency)
-    std::cerr << device_type << "clock frequency: " 
+    std::cerr << device_type << " clock frequency: " 
               << mqueue.get_device().get_info<sycl::info::device::max_clock_frequency>() 
               << " MHz" 
               << std::endl;
