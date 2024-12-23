@@ -926,10 +926,10 @@ class SyclNetwork : public Network {
   bool IsCpu() const override { return device_.is_cpu(); }
   
   // For now its just 2 threads will add for multiple gpu's. 
-  int GetThreads() const override { return 2 /*+ total_gpus_*/; }
+  int GetThreads() const override { return device_.is_gpu() ? 2 : 1; }
   
   int GetMiniBatchSize() const override {
-     if (device_.is_cpu()) { return 7;}
+     if (device_.is_cpu()) { return 47;}
     // Simple heuristic that seems to work for a wide range of GPUs.
     return 2 * compute_units_;
   }
