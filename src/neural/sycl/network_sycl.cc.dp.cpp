@@ -201,21 +201,18 @@ class SyclNetwork : public Network {
                  nf.network() == NF::NETWORK_ATTENTIONBODY_WITH_MULTIHEADFORMAT;
 
     max_batch_size_ = options.GetOrDefault<int>("max_batch", 1024);
-
-    // A vector to store sycl devices.
-    std::vector<sycl::device> devices;
-
+    
     // Get all the available platforms
     auto platforms = sycl::platform::get_platforms();
     
     // Look only for OpenCL platforms
     for (const auto& platform : platforms) {
-        if (platform.get_info<sycl::info::platform::name>().find("OpenCL") != std::string::npos) {
+      if (platform.get_info<sycl::info::platform::name>().find("OpenCL") != std::string::npos) {
             auto platform_devices = platform.get_devices();
             devices.insert(devices.end(), platform_devices.begin(), platform_devices.end());
         }
     }
-
+    
     // Count the GPU's.
     for (const auto& device : devices) {
         if (device.is_gpu()) { total_gpus_++; }
@@ -223,9 +220,9 @@ class SyclNetwork : public Network {
     
     // Get the sycl device.
     device_ = devices[gpu_id_];
-    // Device context.
+    
     sycl::context context{device_};
-  
+      
     // Get the number of compute units(execution units).
     compute_units_ = device_.get_info<sycl::info::device::max_compute_units>();
 
@@ -940,6 +937,9 @@ class SyclNetwork : public Network {
     return capabilities_;
   }
   
+  // A vector to store all sycl devices.
+  std::vector<sycl::device> devices;
+  
   // Check if device is the cpu for thread handling.
   bool IsCpu() const override { return device_.is_cpu(); }
   
@@ -948,19 +948,11 @@ class SyclNetwork : public Network {
   
   int GetMiniBatchSize() const override {
      if (device_.is_cpu()) { return 47; }
-    // Simple heuristic that seems to work for a wide range of GPUs.
-    return 2 * compute_units_;
-  }
+       // Simple heuristic that seems to work for a wide range of GPUs.
+       return 2 * compute_units_;
+    }
 
-  std::unique_ptr<NetworkComputation> NewComputation() override {
-    // Set correct gpu id for this computation (as it might have been called
-    // from a different thread).
-    /*
-    DPCT1093:90: The "gpu_id_" device may be not the one intended for use.
-    Adjust the selected device if needed.
-    */
-    //dpct::select_device(gpu_id_);
-    dpct::select_device(gpu_id_);
+  std::unique_ptr<NetworkComputation> NewComputation() override { 
     return std::make_unique<SyclNetworkComputation<DataType>>(this, wdl_,
                                                               moves_left_);
   }
@@ -1004,6 +996,7 @@ class SyclNetwork : public Network {
   mutable std::mutex lock_;
   sycl::queue * sycl_queue_;
   sycl::device device_;
+
 
 
   int numBlocks_;
