@@ -108,9 +108,9 @@ struct InputsOutputs {
   void** offset_pointers_ = nullptr;
   void** head_offset_pointers_ = nullptr;
 
-  // cuda stream used to run the network
+  // sycl queue used to run the network
   sycl::queue& q_ct1;
 };
 
-}  // namespace cudnn_backend
+}  // namespace sycldnn_backend
 }  // namespace lczero

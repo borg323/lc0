@@ -20,8 +20,9 @@ set CUDNN_PATH=%CUDA_PATH%
 set OPENBLAS_PATH=C:\OpenBLAS
 set MKL_PATH=C:\Program Files (x86)\Intel\oneAPI\mkl\latest\
 set DNNL_PATH=C:\Program Files (x86)\Intel\oneAPI\dnnl\latest\cpu_iomp
-set OPENCL_LIB_PATH=%CUDA_PATH%\lib\x64
-set OPENCL_INCLUDE_PATH=%CUDA_PATH%\include
+set SYCL_PATH=C:\Program Files (x86)\Intel\oneAPI\compiler\2025.0
+set OPENCL_LIB_PATH=%SYCL_PATH%\lib
+set OPENCL_INCLUDE_PATH=%SYCL_PATH%\include\sycl\CL
 
 rem 3. In most cases you won't need to change anything further down.
 echo Deleting build directory:
@@ -48,7 +49,7 @@ meson setup build --buildtype release -Ddx=%DX12% -Dcudnn=%CUDNN% -Dplain_cuda=%
 -Dopencl=%OPENCL% -Dblas=%BLAS% -Dmkl=%MKL% -Dopenblas=%OPENBLAS% -Ddnnl=%DNNL% -Dgtest=%TEST% ^
 -Dcudnn_include="%CUDNN_INCLUDE_PATH%" -Dcudnn_libdirs="%CUDNN_LIB_PATH%" ^
 -Dmkl_include="%MKL_PATH%\include" -Dmkl_libdirs="%MKL_PATH%\lib\intel64" -Ddnnl_dir="%DNNL_PATH%" ^
--Dopencl_libdirs="%OPENCL_LIB_PATH%" -Dopencl_include="%OPENCL_INCLUDE_PATH%" ^
+-Dpopcnt=false -Dopencl_libdirs="%OPENCL_LIB_PATH%" -Dopencl_include="%OPENCL_INCLUDE_PATH%" ^
 -Dopenblas_include="%OPENBLAS_PATH%\include" -Dopenblas_libdirs="%OPENBLAS_PATH%\lib" ^
 -Ddefault_library=static -Dsycl=%SYCL% -Db_vscrt=md
 
