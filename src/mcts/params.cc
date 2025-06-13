@@ -518,7 +518,7 @@ void SearchParams::Populate(OptionsParser* options) {
   options->Add<IntOption>(kTemperatureCutoffMoveId, 0, 1000) = 0;
   options->Add<FloatOption>(kTemperatureEndgameId, 0.0f, 100.0f) = 0.0f;
   options->Add<FloatOption>(kTemperatureWinpctCutoffId, 0.0f, 100.0f) = 100.0f;
-  options->Add<FloatOption>(kTemperatureVisitOffsetId, -1000.0f, 1000.0f) =
+  options->Add<FloatOption>(kTemperatureVisitOffsetId, -1000.0f, 1000000.0f) =
       0.0f;
   options->Add<FloatOption>(kNoiseEpsilonId, 0.0f, 1.0f) = 0.0f;
   options->Add<FloatOption>(kNoiseAlphaId, 0.0f, 10000000.0f) = 0.3f;
