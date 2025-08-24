@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cassert>
 #include <fstream>
+#include <format>
 #include <iterator>
 #include <memory>
 #include <string>
