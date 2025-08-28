@@ -1065,14 +1065,14 @@ void Search::Wait() {
   }
 }
 
-void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
-  for (auto& entry : shared_collisions_) {
-    auto path = entry.first;
+void SearchWorker::CancelCollisions() {
+  for (auto& entry : minibatch_) {
+    if (!entry.IsCollision()) continue;
+    auto path = entry.path;
     for (auto it = ++(path.crbegin()); it != path.crend(); ++it) {
-      std::get<0>(*it)->CancelScoreUpdate(entry.second);
+      std::get<0>(*it)->CancelScoreUpdate(entry.multivisit);
     }
   }
-  shared_collisions_.clear();
 }
 
 Search::~Search() {
@@ -1080,7 +1080,6 @@ Search::~Search() {
   Wait();
   {
     SharedMutex::Lock lock(nodes_mutex_);
-    CancelSharedCollisions();
 
     assert(root_node_->ZeroNInFlight());
   }
@@ -1208,9 +1207,6 @@ void SearchWorker::ExecuteOneIteration() {
   task_count_.store(-1, std::memory_order_release);
   search_->backend_waiting_counter_.fetch_add(1, std::memory_order_relaxed);
 
-  // 2b. Collect collisions.
-  CollectCollisions();
-
   if (params_.GetMaxConcurrentSearchers() != 0) {
     search_->pending_searchers_.fetch_add(1, std::memory_order_acq_rel);
   }
@@ -1287,6 +1283,16 @@ void SearchWorker::GatherMinibatch() {
   // Total number of nodes to process.
   int minibatch_size = 0;
   int cur_n = 0;
+
+  // Collision use atomic operations. We can cancel them outside the lock.
+  struct CollisionsManager {
+    SearchWorker& worker;
+    CollisionsManager(SearchWorker& worker) : worker(worker) {
+    }
+    ~CollisionsManager() {
+      worker.CancelCollisions();
+    }
+  } cancel_collisions_object(*this);
   // We take the nodes_mutex_ only once to avoid bouncing between this thread
   // and a thread returning from RunNNComputation.
   SharedMutex::Lock lock(search_->nodes_mutex_);
@@ -2012,18 +2018,6 @@ void SearchWorker::ExtendNode(NodeToProcess& picked_node) {
   }
 }
 
-// 2b. Copy collisions into shared collisions.
-void SearchWorker::CollectCollisions() {
-  SharedMutex::Lock lock(search_->nodes_mutex_);
-
-  for (const NodeToProcess& node_to_process : minibatch_) {
-    if (node_to_process.IsCollision()) {
-      search_->shared_collisions_.emplace_back(node_to_process.path,
-                                               node_to_process.multivisit);
-    }
-  }
-}
-
 // 4. Run NN computation.
 // ~~~~~~~~~~~~~~~~~~~~~~
 void SearchWorker::RunNNComputation() {
@@ -2111,7 +2105,6 @@ void SearchWorker::DoBackupUpdate() {
     }
   }
   if (!work_done) return;
-  search_->CancelSharedCollisions();
   search_->total_batches_ += 1;
 }
 
@@ -2174,7 +2167,6 @@ bool SearchWorker::MaybeAdjustForTerminalOrTransposition(
 void SearchWorker::DoBackupUpdateSingleNode(
     const NodeToProcess& node_to_process) REQUIRES(search_->nodes_mutex_) {
   if (node_to_process.IsCollision()) {
-    // Collisions are handled via shared_collisions instead.
     return;
   }
 
