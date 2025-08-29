@@ -1320,10 +1320,10 @@ void ResidualBlock<DataType>::Eval(int N, DataType* output,
       36, cublas);
 
   const bool fp16 = std::is_same<half, DataType>::value;
-  bool allowFusing =
-      (C <= kMaxResBlockFusingChannels) ||
-      (fp16 && (shared_mem_size_ >= kMaxResBlockFusingSeFp16AmpereSmem) &&
-       (C <= kMaxResBlockFusingSeKFp16Ampere));
+  bool allowFusing = false;
+//      (C <= kMaxResBlockFusingChannels) ||
+//      (fp16 && (shared_mem_size_ >= kMaxResBlockFusingSeFp16AmpereSmem) &&
+//       (C <= kMaxResBlockFusingSeKFp16Ampere));
 
   if (act_ == ACTIVATION_RELU) {
     if (last_block_) {
