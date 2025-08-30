@@ -917,7 +917,7 @@ __global__ void softmax_kernel(T* output, const T* input, const T* input2) {
 template <typename T>
 void Softmax(int N, int C, T* output, const T* input, const T* input2,
              cudaStream_t stream) {
-  if (C == 64) {
+  if (false && C == 64) {
     int size = N * 32;  // Total no of threads needed
     const int kBlockSize = 256;
     int blocks = DivUp(size, kBlockSize);
