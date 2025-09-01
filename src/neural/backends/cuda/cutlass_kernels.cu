@@ -32,11 +32,7 @@
 // Fused MHA implementation from cutlass example #41
 #include "fused_multi_head_attention/kernel_forward.h"
 
-#if __CUDA_ARCH__ >= 900
-#define ARCH cutlass::arch::Sm90;
-#else
-#define ARCH cutlass::arch::Sm80;
-#endif
+
 
 template <bool bias>
 bool fusedMHACutlass(void* output, void* q, void* k, void* v, void* skip,
@@ -52,7 +48,7 @@ bool fusedMHACutlass(void* output, void* q, void* k, void* v, void* skip,
 
   using Attention =
       AttentionKernel<cutlass::half_t,      // scalar_t
-                      ARCH,                 // ArchTag
+                      cutlass::arch::Sm90,  // ArchTag
                       true,                 // Memory is aligned
                       kQueriesPerBlock, kKeysPerBlock, kSingleValueIteration,
                       false,  // Supports dropout
