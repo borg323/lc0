@@ -48,7 +48,7 @@ bool fusedMHACutlass(void* output, void* q, void* k, void* v, void* skip,
 
   using Attention =
       AttentionKernel<cutlass::half_t,      // scalar_t
-                      cutlass::arch::Sm90,  // ArchTag
+                      cutlass::arch::Sm80,  // ArchTag
                       true,                 // Memory is aligned
                       kQueriesPerBlock, kKeysPerBlock, kSingleValueIteration,
                       false,  // Supports dropout
