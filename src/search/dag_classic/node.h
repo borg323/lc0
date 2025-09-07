@@ -95,6 +95,80 @@ namespace dag_classic {
 #define __arm__
 #endif
 
+// Atomic unique_ptr based on the public domain code from
+// https://stackoverflow.com/a/42811152 .
+template <class T>
+class atomic_unique_ptr {
+  using pointer = T*;
+  using unique_pointer = std::unique_ptr<T>;
+
+ public:
+  // Manage no pointer.
+  constexpr atomic_unique_ptr() noexcept : ptr() {}
+
+  // Make pointer @p managed.
+  explicit atomic_unique_ptr(pointer p) noexcept : ptr(p) {}
+
+  // Move the managed pointer ownership from another atomic_unique_ptr.
+  atomic_unique_ptr(atomic_unique_ptr&& p) noexcept : ptr(p.release()) {}
+  // Move the managed pointer ownership from another atomic_unique_ptr.
+  atomic_unique_ptr& operator=(atomic_unique_ptr&& p) noexcept {
+    reset(p.release());
+    return *this;
+  }
+
+  // Move the managed object ownership from a unique_ptr.
+  atomic_unique_ptr(unique_pointer&& p) noexcept : ptr(p.release()) {}
+  // Move the managed object ownership from a unique_ptr.
+  atomic_unique_ptr& operator=(unique_pointer&& p) noexcept {
+    reset(p.release());
+    return *this;
+  }
+
+  // Replace the managed pointer, deleting the old one.
+  void reset(pointer p = pointer()) noexcept {
+    auto old = ptr.exchange(p, std::memory_order_acq_rel);
+    if (old) delete old;
+  }
+  // Release ownership of and delete the owned pointer.
+  ~atomic_unique_ptr() { reset(); }
+
+  // Returns the managed pointer.
+  operator pointer() const noexcept { return get(); }
+  // Returns the managed pointer.
+  pointer operator->() const noexcept { return get(); }
+  // Returns the managed pointer.
+  pointer get() const noexcept {
+    return ptr.load(std::memory_order_acquire);
+  }
+
+  // Checks whether there is a managed pointer.
+  explicit operator bool() const noexcept { return get() != pointer(); }
+
+  // Replace the managed pointer, only releasing returning the old one.
+  pointer set(pointer p = pointer()) noexcept {
+    return ptr.exchange(p, std::memory_order_acq_rel);
+  }
+  // Return the managed pointer and release its ownership.
+  pointer release() noexcept { return set(pointer()); }
+
+  // Move managed pointer from @source, iff the managed pointer equals
+  // @expected.
+  bool compare_exchange(pointer& expected,
+                        atomic_unique_ptr<T>& source) noexcept {
+    if (ptr.compare_exchange_strong(expected, source.get(),
+                                    std::memory_order_acq_rel)) {
+      source.release();
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+ private:
+  std::atomic<pointer> ptr;
+};
+
 class Node;
 class Edge {
  public:
@@ -201,7 +275,7 @@ class Node {
   // Get first child.
   Node* GetChild() const;
   // Get next sibling.
-  std::unique_ptr<Node>* GetSibling() { return &sibling_; }
+  atomic_unique_ptr<Node>* GetSibling() { return &sibling_; }
   // Moves sibling in.
   void MoveSiblingIn(std::unique_ptr<Node>& sibling) {
     sibling_ = std::move(sibling);
@@ -217,7 +291,7 @@ class Node {
   uint32_t GetChildrenVisits() const;
   uint32_t GetTotalVisits() const;
   // Returns n + n_in_flight.
-  int GetNStarted() const { return n_ + n_in_flight_; }
+  int GetNStarted() const { return n_ + GetNInFlight(); }
 
   float GetQ(float draw_score) const { return wl_ + draw_score * d_; }
   // Returns node eval, i.e. average subtree V for non-terminal node and -1/0/1
@@ -287,7 +361,7 @@ class Node {
   float GetP() const { return edge_.GetP(); }
   void SetP(float val) { edge_.SetP(val); }
 
-  std::shared_ptr<LowNode> GetLowNode() const { return low_node_; }
+  const std::shared_ptr<LowNode>& GetLowNode() const { return low_node_; }
 
   void SetLowNode(std::shared_ptr<LowNode> low_node);
   void UnsetLowNode();
@@ -296,11 +370,12 @@ class Node {
   std::string DebugString() const;
   // Return string describing the edge from node's parent to its low node in the
   // Graphviz dot format.
-  std::string DotEdgeString(bool as_opponent = false,
-                            const LowNode* parent = nullptr) const;
+  void DotEdgeString(std::ofstream& file,
+                     bool as_opponent = false,
+                     const LowNode* parent = nullptr) const;
   // Return string describing the graph starting at this node in the Graphviz
   // dot format.
-  std::string DotGraphString(bool as_opponent = false) const;
+  void DotGraphString(std::ofstream& file, bool as_opponent = false) const;
 
   // Returns true if graph under this node has every n_in_flight_ == 0 and
   // prints offending nodes and low nodes and stats to cerr otherwise.
@@ -315,6 +390,34 @@ class Node {
   bool IsRepetition() const { return repetition_; }
 
   bool WLDMInvariantsHold() const;
+
+#ifndef NDEBUG
+  // RAII holder was a visitor. It will automatically release the reservation
+  // when going out of scope. It is possible to use visitor for branches. There
+  // must be a full tree walk before id value wraps arround or walk will ignore
+  // some nodes.
+  // It doesn't support concurrent access currently. API emulates mutexes which
+  // makes it possible to add limited number of concurrent access and waiting
+  // for free resources if needed.
+  struct VisitorId {
+    using type = uint32_t;
+    using storage = uint32_t;
+
+    VisitorId(const VisitorId&) = delete;
+
+    explicit VisitorId();
+    ~VisitorId();
+
+    operator type() const {
+      return id_;
+    }
+
+    friend class Node;
+    friend class LowNode;
+  private:
+    type id_;
+  };
+#endif
 
  private:
   // To minimize the number of padding bytes and to avoid having unnecessary
@@ -332,15 +435,15 @@ class Node {
   // the perspective of the player-to-move for the position. WL stands for "W
   // minus L". Is equal to Q if draw score is 0.
   double wl_ = 0.0f;
+  // Averaged draw probability. Works similarly to WL, except that D is not
+  // flipped depending on the side to move.
+  double d_ = 0.0f;
 
   // 8 byte fields on 64-bit platforms, 4 byte on 32-bit.
   // Pointer to a next sibling. nullptr if there are no further siblings.
-  std::unique_ptr<Node> sibling_;
+  atomic_unique_ptr<Node> sibling_;
 
   // 4 byte fields.
-  // Averaged draw probability. Works similarly to WL, except that D is not
-  // flipped depending on the side to move.
-  float d_ = 0.0f;
   // Estimated remaining plies.
   float m_ = 0.0f;
   // How many completed visits this node had.
@@ -348,7 +451,7 @@ class Node {
   // (AKA virtual loss.) How many threads currently process this node (started
   // but not finished). This value is added to n during selection which node
   // to pick in MCTS, and also when selecting the best move.
-  uint32_t n_in_flight_ = 0;
+  std::atomic<uint32_t> n_in_flight_ = 0;
 
   // Move and policy for this edge.
   Edge edge_;
@@ -416,7 +519,7 @@ class LowNode {
 
   void SetNNEval(const EvalResult* eval) {
     assert(n_ == 0);
-    assert(child_ == nullptr);
+    assert(!child_);
 
     for (size_t idx = 0; idx < num_edges_; idx++) {
       edges_.get()[idx].SetP(eval->p[idx]);
@@ -430,7 +533,7 @@ class LowNode {
   }
 
   // Gets the first child.
-  std::unique_ptr<Node>* GetChild() { return &child_; }
+  atomic_unique_ptr<Node>* GetChild() { return &child_; }
 
   // Returns whether a node has children.
   bool HasChildren() const { return num_edges_ > 0; }
@@ -487,7 +590,7 @@ class LowNode {
   // Debug information about the node.
   std::string DebugString() const;
   // Return string describing this node in the Graphviz dot format.
-  std::string DotNodeString() const;
+  void DotNodeString(std::ofstream& file) const;
 
   void SortEdges() {
     assert(edges_);
@@ -512,6 +615,10 @@ class LowNode {
 
   bool WLDMInvariantsHold() const;
 
+#ifndef NDEBUG
+  bool Visit(Node::VisitorId::type id);
+#endif
+
  private:
   // To minimize the number of padding bytes and to avoid having unnecessary
   // padding when new fields are added, we arrange the fields by size, largest
@@ -524,17 +631,17 @@ class LowNode {
   // perspective of the player-to-move for the position.
   // WL stands for "W minus L". Is equal to Q if draw score is 0.
   double wl_ = 0.0f;
+  // Averaged draw probability. Works similarly to WL, except that D is not
+  // flipped depending on the side to move.
+  double d_ = 0.0f;
 
   // 8 byte fields on 64-bit platforms, 4 byte on 32-bit.
   // Array of edges.
   std::unique_ptr<Edge[]> edges_;
   // Pointer to the first child. nullptr when no children.
-  std::unique_ptr<Node> child_;
+  atomic_unique_ptr<Node> child_;
 
   // 4 byte fields.
-  // Averaged draw probability. Works similarly to WL, except that D is not
-  // flipped depending on the side to move.
-  float d_ = 0.0f;
   // Estimated remaining plies.
   float m_ = 0.0f;
   // How many completed visits this node had.
@@ -555,6 +662,11 @@ class LowNode {
   GameResult upper_bound_ : 2;
   // Low node is a transposition (for ever).
   bool is_transposition : 1;
+  // Debug only id as the last to avoid taking place of actively used variables
+  // in the cache.
+#ifndef NDEBUG
+  Node::VisitorId::storage visitor_id_ = {};
+#endif
 };
 
 // Check that LowNode still fits into an expected cache line size.
@@ -646,8 +758,8 @@ class EdgeAndNode {
 template <bool is_const>
 class Edge_Iterator : public EdgeAndNode {
  public:
-  using Ptr = std::conditional_t<is_const, const std::unique_ptr<Node>*,
-                                 std::unique_ptr<Node>*>;
+  using Ptr = std::conditional_t<is_const, const atomic_unique_ptr<Node>*,
+                                 atomic_unique_ptr<Node>*>;
   using value_type = Edge_Iterator;
   using iterator_category = std::forward_iterator_tag;
   using difference_type = std::ptrdiff_t;
@@ -688,26 +800,44 @@ class Edge_Iterator : public EdgeAndNode {
   // If there is node, return it. Otherwise spawn a new one and return it.
   Node* GetOrSpawnNode(Node* parent) {
     if (node_) return node_;  // If there is already a node, return it.
-    Actualize();              // But maybe other thread already did that.
-    if (node_) return node_;  // If it did, return.
-    // Now we are sure we have to create a new node.
-    // Suppose there are nodes with idx 3 and 7, and we want to insert one with
-    // idx 5. Here is how it looks like:
-    //    node_ptr_ -> &Node(idx_.3).sibling_  ->  Node(idx_.7)
-    // Here is how we do that:
-    // 1. Store pointer to a node idx_.7:
-    //    node_ptr_ -> &Node(idx_.3).sibling_  ->  nullptr
-    //    tmp -> Node(idx_.7)
-    std::unique_ptr<Node> tmp = std::move(*node_ptr_);
-    // 2. Create fresh Node(idx_.5):
-    //    node_ptr_ -> &Node(idx_.3).sibling_  ->  Node(idx_.5)
-    //    tmp -> Node(idx_.7)
+
+    // We likely need to add a new node, prepare it now.
     auto low_parent = parent->GetLowNode()->GetEdgeAt(current_idx_);
-    *node_ptr_ = std::make_unique<Node>(low_parent, current_idx_);
-    // 3. Attach stored pointer back to a list:
-    //    node_ptr_ ->
-    //         &Node(idx_.3).sibling_ -> Node(idx_.5).sibling_ -> Node(idx_.7)
-    (*node_ptr_)->MoveSiblingIn(tmp);
+    atomic_unique_ptr<Node> new_node =
+        std::make_unique<Node>(low_parent, current_idx_);
+    while (true) {
+      auto node = Actualize();  // But maybe other thread already did that.
+      if (node_) return node_;  // If it did, return.
+
+      // New node needs to be added, but we might be in a race with another
+      // thread doing what we do or adding a different index to the same
+      // sibling.
+
+      // Suppose there are nodes with idx 3 and 7, and we want to insert one
+      // with idx 5. Here is how it looks like:
+      //    node_ptr_ -> &Node(idx_.3).sibling_  ->  Node(idx_.7)
+      // Here is how we do that:
+      // 1. Store pointer to a node idx_.7:
+      //    node_ptr_ -> &Node(idx_.3).sibling_  ->  nullptr
+      //    tmp -> Node(idx_.7)
+      // 2. Create fresh Node(idx_.5):
+      //    node_ptr_ -> &Node(idx_.3).sibling_  ->  Node(idx_.5)
+      //    tmp -> Node(idx_.7)
+      // 3. Attach stored pointer back to a list:
+      //    node_ptr_ ->
+      //         &Node(idx_.3).sibling_ -> Node(idx_.5).sibling_ -> Node(idx_.7)
+
+      // Atomically add the new node into the right place.
+      // Set new node's sibling to the expected sibling seen by Actualize in
+      // node_ptr_.
+      auto new_sibling = new_node->GetSibling();
+      new_sibling->set(node);
+      // Try to atomically insert the new node and stop if it works.
+      if (node_ptr_->compare_exchange(node, new_node)) break;
+      // Recover from failure and try again.
+      // Release expected sibling to avoid double free.
+      new_sibling->release();
+    }
     // 4. Actualize:
     //    node_ -> &Node(idx_.5)
     //    node_ptr_ -> &Node(idx_.5).sibling_ -> Node(idx_.7)
@@ -716,22 +846,30 @@ class Edge_Iterator : public EdgeAndNode {
   }
 
  private:
-  void Actualize() {
+  // Moves node_ptr_ as close as possible to the target index and returns the
+  // contents of node_ptr_ for use by atomic insert in GetOrSpawnNode.
+  Node* Actualize() {
     // If node_ptr_ is behind, advance it.
     // This is needed (and has to be 'while' rather than 'if') as other threads
     // could spawn new nodes between &node_ptr_ and *node_ptr_ while we didn't
     // see.
-    while (*node_ptr_ && (*node_ptr_)->Index() < current_idx_) {
-      node_ptr_ = (*node_ptr_)->GetSibling();
+    // Read the direct pointer just once as other threads may change it between
+    // uses.
+    auto node = node_ptr_->get();
+    while (node != nullptr && node->Index() < current_idx_) {
+      node_ptr_ = node->GetSibling();
+      node = node_ptr_->get();
     }
     // If in the end node_ptr_ points to the node that we need, populate node_
     // and advance node_ptr_.
-    if (*node_ptr_ && (*node_ptr_)->Index() == current_idx_) {
-      node_ = (*node_ptr_).get();
-      node_ptr_ = node_->GetSibling();
+    if (node != nullptr && node->Index() == current_idx_) {
+      node_ = node;
+      node_ptr_ = node->GetSibling();
     } else {
       node_ = nullptr;
     }
+
+    return node;
   }
 
   // Pointer to a pointer to the next node. Has to be a pointer to pointer

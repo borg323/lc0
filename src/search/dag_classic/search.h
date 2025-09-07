@@ -135,7 +135,7 @@ class Search {
   // Node can only be root or ponder (depth 1) and move_to_node is only given
   // for the ponder node.
   std::vector<std::string> GetVerboseStats(
-      Node* node, std::optional<Move> move_to_node) const;
+      const Node* node, std::optional<Move> move_to_node) const;
 
   // Returns the draw score at the root of the search. At odd depth pass true to
   // the value of @is_odd_depth to change the sign of the draw score.
@@ -233,7 +233,11 @@ class SearchWorker {
     }
     for (int i = 0; i < task_workers_; i++) {
       task_workspaces_.emplace_back();
-      task_threads_.emplace_back([this, i]() { this->RunTasks(i); });
+      task_threads_.emplace_back([this, i]() {
+          LOGFILE << "Task worker " << i << " starting.";
+          this->RunTasks(i);
+          LOGFILE << "Task worker " << i << " exiting.";
+        });
     }
     target_minibatch_size_ = params_.GetMiniBatchSize();
     if (target_minibatch_size_ == 0) {
@@ -255,6 +259,7 @@ class SearchWorker {
     for (size_t i = 0; i < task_threads_.size(); i++) {
       task_threads_[i].join();
     }
+    LOGFILE << "Search worker destroyed.";
   }
 
   // Runs iterations while needed.
@@ -361,7 +366,7 @@ class SearchWorker {
       for (auto it = path.cbegin(); it != path.cend(); ++it) {
         if (it != path.cbegin()) oss << "->";
         auto n = std::get<0>(*it);
-        auto nl = n->GetLowNode();
+        const auto& nl = n->GetLowNode();
         oss << n << ":" << n->GetNInFlight();
         if (nl) {
           oss << "(" << nl << ")";
