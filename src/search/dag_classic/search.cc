@@ -1996,8 +1996,9 @@ void SearchWorker::ExtendNode(NodeToProcess& picked_node) {
 
   // Check the transposition table first before asking for NN evaluation.
   // The board Hash() doesn't include repetitions; the position Hash() does.
-  picked_node.hash =
-      HashCat(history.Last().GetBoard().Hash(), history.Last().GetRule50Ply());
+  unsigned int r50 = history.Last().GetRule50Ply();
+  if (r50 < 64) r50 &= ~7;
+  picked_node.hash = HashCat(history.Last().GetBoard().Hash(), r50);
   auto tt_iter = search_->tt_->find(picked_node.hash);
   // Transposition table entry might be expired.
   if (tt_iter != search_->tt_->end()) {
