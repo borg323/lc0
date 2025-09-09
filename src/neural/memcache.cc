@@ -35,11 +35,15 @@
 namespace lczero {
 namespace {
 
-// TODO For now it uses the hash of the current position, ignoring repetitions
-// and history. We'll likely need to have configurable hash function that we'll
-// also reuse as a tree hash key.
-uint64_t ComputeEvalPositionHash(const EvalPosition& pos) {
-  return pos.pos.back().Hash();
+// TODO For now it uses the hash of the current position, ignoring history. The
+// rule50 ply count is added with lower resolution unless it is close to a draw.
+// We'll likely need to have configurable hash function that we'll also reuse as
+// a tree hash key.
+uint64_t ComputeEvalPositionHash(const EvalPosition& eval_pos) {
+  auto& pos = eval_pos.pos.back();
+  unsigned int r50 = pos.GetRule50Ply();
+  if (r50 < 64) r50 &= ~7;
+  return HashCat(pos.Hash(), r50);
 }
 
 struct CachedValue {
