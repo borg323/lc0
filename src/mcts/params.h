@@ -129,6 +129,7 @@ class SearchParams {
     assert(mode == "disable");
     return ContemptMode::NONE;
   }
+  bool GetContemptModeTBEnable() const { return kContemptModeTBEnable; }
   float GetWDLRescaleRatio() const { return kWDLRescaleParams.ratio; }
   float GetWDLRescaleDiff() const { return kWDLRescaleParams.diff; }
   float GetWDLMaxS() const { return kWDLMaxS; }
@@ -221,6 +222,7 @@ class SearchParams {
   static const OptionId kContemptModeId;
   static const OptionId kContemptId;
   static const OptionId kContemptMaxValueId;
+  static const OptionId kContemptModeTBEnableId;
   static const OptionId kWDLCalibrationEloId;
   static const OptionId kWDLContemptAttenuationId;
   static const OptionId kWDLMaxSId;
@@ -286,6 +288,7 @@ class SearchParams {
   const int kMaxConcurrentSearchers;
   const float kDrawScore;
   const float kContempt;
+  const bool kContemptModeTBEnable;
   const WDLRescaleParams kWDLRescaleParams;
   const float kWDLMaxS;
   const float kWDLEvalObjectivity;
