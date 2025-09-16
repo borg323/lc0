@@ -623,7 +623,7 @@ void Search::MaybeTriggerStop(const IterationStats& stats,
   // Already responded bestmove, nothing to do here.
   if (bestmove_is_sent_) return;
   // Don't stop when the root node is not yet expanded.
-  if (total_playouts_ + initial_visits_ == 0) return;
+  if (stats.total_nodes == 0) return;
 
   if (!stop_.load(std::memory_order_acquire)) {
     if (stopper_->ShouldStop(stats, hints)) FireStopInternal();
@@ -1105,7 +1105,7 @@ void SearchWorker::RunTasks(int tid) {
             // We got the spin lock, double check we're still in the clear.
             if (nta < tc) {
               id = tasks_taken_.fetch_add(1, std::memory_order_acq_rel);
-              task = &picking_tasks_[id];
+              task = picking_tasks_.data() + id;
               task_taking_started_.store(0, std::memory_order_release);
               break;
             }
@@ -1153,7 +1153,7 @@ void SearchWorker::RunTasks(int tid) {
           break;
         }
       }
-      picking_tasks_[id].complete = true;
+      picking_tasks_.data()[id].complete = true;
       completed_tasks_.fetch_add(1, std::memory_order_acq_rel);
     }
   }

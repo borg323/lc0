@@ -60,37 +60,19 @@ includes += include_directories('third_party', is_system: true)
 compile_proto = find_program('scripts/compile_proto.py')
 gen = generator(compile_proto, output: ['@BASENAME@.pb.h'],
   arguments : [
-    '--proto_path=@CURRENT_SOURCE_DIR@/libs/lczero-common',
+    '--proto_path=@CURRENT_SOURCE_DIR@',
     '--cpp_out=@BUILD_DIR@',
     '@INPUT@'])
 
-# Handle submodules.
-git = find_program('git', required: false)
-if run_command('scripts/checkdir.py', 'libs/lczero-common/proto', check : false).returncode() != 0
-  if git.found()
-    if run_command(git, 'status', check : false).returncode() == 0
-      message('updating git submodule libs/lczero-common')
-      run_command(git, 'submodule', 'update', '--init', '--recursive', check : false)
-    else
-      message('cloning lczero-common.git into libs/lczero-common')
-      run_command(git, 'clone', '--depth=1',
-                  'https://github.com/LeelaChessZero/lczero-common.git',
-                  'libs/lczero-common/', check : false)
-    endif
-  else
-    error('Please install git to automatically fetch submodules or download the archives manually from GitHub.')
-  endif
-endif
-
 pb_files = [
   'src/utils/protomessage.cc',
-  gen.process('libs/lczero-common/proto/net.proto',
-    preserve_path_from : meson.current_source_dir() + '/libs/lczero-common/')
+  gen.process('proto/net.proto', preserve_path_from : meson.current_source_dir())
 ]
 common_files += pb_files
 
 # Extract git short revision.
 short_rev = 'unknown'
+git = find_program('git', required: false)
 if git.found()
   r = run_command(git, 'rev-parse', '--short', 'HEAD', check : false)
   if r.returncode() == 0
@@ -132,17 +114,11 @@ elif get_option('malloc') != ''
 endif
 
 # ONNX and HLO protobufs.
-gen_proto_src = generator(compile_proto, output: ['@BASENAME@.pb.h'],
-  arguments : [
-    '--proto_path=@CURRENT_SOURCE_DIR@/src',
-    '--cpp_out=@BUILD_DIR@',
-    '@INPUT@'])
+files += gen.process('proto/onnx.proto',
+  preserve_path_from : meson.current_source_dir())
 
-files += gen_proto_src.process('src/neural/onnx/onnx.proto',
-  preserve_path_from : meson.current_source_dir() + '/src/')
-
-files += gen_proto_src.process('src/neural/xla/hlo.proto',
-  preserve_path_from : meson.current_source_dir() + '/src/')
+files += gen.process('proto/hlo.proto',
+  preserve_path_from : meson.current_source_dir())
 
 #############################################################################
 ## Main files
@@ -250,8 +226,10 @@ if get_option('dag_classic')
     'src/search/dag_classic/wrapper.cc',
   ]
 
-  absl = subproject('abseil-cpp', default_options : ['warning_level=0', 'cpp_std=c++20'])
-  deps += absl.get_variable('absl_container_dep').as_system()
+  deps += dependency('absl_flat_hash_map',
+                     include_type: 'system',
+                     fallback: ['abseil-cpp', 'absl_container_dep'],
+                     default_options : ['warning_level=0', 'cpp_std=c++20'])
 endif
 
 #############################################################################
@@ -502,7 +480,7 @@ if get_option('build_backends')
         cuda_arguments += ['-Xcompiler', '-MD']
       endif
     else
-      cuda_arguments += ['--std=c++14', '-Xcompiler', '-fPIC']
+      cuda_arguments += ['--std=c++17', '-Xcompiler', '-fPIC']
     endif
     if get_option('nvcc_ccbin') != ''
       cuda_arguments += ['-ccbin=' + get_option('nvcc_ccbin')]
@@ -803,13 +781,12 @@ endif
 
   deps += cc.find_library('libatomic', required: false)
 
-  deps += dependency('eigen3', fallback: ['eigen', 'eigen_dep']).as_system()
   eigen_dep = dependency('eigen3')
   # Check for needed header, bad dependency seen in the widl.
-  if eigen_dep.found() and cc.has_header('Eigen/Core')
-    deps += eigen_dep
+  if eigen_dep.found() and cc.has_header('Eigen/Core', dependencies: eigen_dep)
+    deps += eigen_dep.as_system()
   else
-    deps += subproject('eigen').get_variable('eigen_dep')
+    deps += subproject('eigen').get_variable('eigen_dep').as_system()
   endif
 
 #############################################################################

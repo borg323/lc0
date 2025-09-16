@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 #include <list>
 #include <sstream>
 #include <thread>
@@ -128,7 +129,7 @@ void Node::Trim() {
   d_ = 0.0f;
   m_ = 0.0f;
   n_ = 0;
-  n_in_flight_ = 0;
+  n_in_flight_.store(0, std::memory_order_release);
 
   // edge_
 
@@ -154,7 +155,7 @@ float Node::GetVisitedPolicy() const {
 }
 
 uint32_t Node::GetNInFlight() const {
-  return n_in_flight_;
+  return n_in_flight_.load(std::memory_order_acquire);
 }
 
 uint32_t Node::GetChildrenVisits() const {
@@ -172,7 +173,7 @@ std::string Node::DebugString() const {
   oss << " <Node> This:" << this << " LowNode:" << low_node_.get()
       << " Index:" << index_ << " Move:" << GetMove().ToString(true)
       << " Sibling:" << sibling_.get() << " P:" << GetP() << " WL:" << wl_
-      << " D:" << d_ << " M:" << m_ << " N:" << n_ << " N_:" << n_in_flight_
+      << " D:" << d_ << " M:" << m_ << " N:" << n_ << " N_:" << GetNInFlight()
       << " Term:" << static_cast<int>(terminal_type_)
       << " Bounds:" << static_cast<int>(lower_bound_) - 2 << ","
       << static_cast<int>(upper_bound_) - 2;
@@ -319,14 +320,19 @@ void Node::SetBounds(GameResult lower, GameResult upper) {
 }
 
 bool Node::TryStartScoreUpdate() {
-  if (n_ == 0 && n_in_flight_ > 0) return false;
-  ++n_in_flight_;
-  return true;
+  if (n_ > 0) {
+    n_in_flight_.fetch_add(1, std::memory_order_acq_rel);
+    return true;
+  } else {
+    uint32_t expected_n_if_flight_ = 0;
+    return n_in_flight_.compare_exchange_strong(expected_n_if_flight_, 1,
+                                              std::memory_order_acq_rel);
+  }
 }
 
 void Node::CancelScoreUpdate(uint32_t multivisit) {
-  assert(n_in_flight_ >= (uint32_t)multivisit);
-  n_in_flight_ -= multivisit;
+  assert(GetNInFlight() >= (uint32_t)multivisit);
+  n_in_flight_.fetch_sub(multivisit, std::memory_order_acq_rel);
 }
 
 void LowNode::FinalizeScoreUpdate(float v, float d, float m,
@@ -366,8 +372,8 @@ void Node::FinalizeScoreUpdate(float v, float d, float m, uint32_t multivisit) {
   // Increment N.
   n_ += multivisit;
   // Decrement virtual loss.
-  assert(n_in_flight_ >= (uint32_t)multivisit);
-  n_in_flight_ -= multivisit;
+  assert(GetNInFlight() >= (uint32_t)multivisit);
+  n_in_flight_.fetch_sub(multivisit, std::memory_order_acq_rel);
 }
 
 void Node::AdjustForTerminal(float v, float d, float m, uint32_t multivisit) {
@@ -382,32 +388,31 @@ void Node::AdjustForTerminal(float v, float d, float m, uint32_t multivisit) {
 }
 
 void Node::IncrementNInFlight(uint32_t multivisit) {
-  n_in_flight_ += multivisit;
+  n_in_flight_.fetch_add(multivisit, std::memory_order_acq_rel);
 }
 
 void LowNode::ReleaseChildren(
     std::vector<std::unique_ptr<Node>>& released_nodes) {
-  released_nodes.emplace_back(std::move(child_));
+  released_nodes.emplace_back(child_.release());
 }
 
 void LowNode::ReleaseChildrenExceptOne(
     Node* node_to_save, std::vector<std::unique_ptr<Node>>& released_nodes) {
   // Stores node which will have to survive (or nullptr if it's not found).
   std::unique_ptr<Node> saved_node;
-  // Pointer to unique_ptr, so that we could move from it.
-  for (std::unique_ptr<Node>* node = &child_; *node;
-       node = (*node)->GetSibling()) {
+  // Pointer to atomic_unique_ptr, so that we could move from it.
+  for (auto node = &child_; *node; node = (*node)->GetSibling()) {
     // If current node is the one that we have to save.
     if (node->get() == node_to_save) {
       // Kill all remaining siblings.
-      released_nodes.emplace_back(std::move(*(*node)->GetSibling()));
+      released_nodes.emplace_back((*node)->GetSibling()->release());
       // Save the node, and take the ownership from the unique_ptr.
-      saved_node = std::move(*node);
+      saved_node.reset(node->release());
       break;
     }
   }
   // Make saved node the only child. (kills previous siblings).
-  released_nodes.emplace_back(std::move(child_));
+  released_nodes.emplace_back(child_.release());
   child_ = std::move(saved_node);
 }
 
@@ -430,14 +435,71 @@ void Node::UnsetLowNode() {
   low_node_.reset();
 }
 
+#ifndef NDEBUG
+namespace {
+static Node::VisitorId::storage current_visitor_id = 0;
+}
+
+Node::VisitorId::VisitorId() {
+  id_ = ++current_visitor_id;
+  if (id_ == 0)
+    id_ = ++current_visitor_id;
+}
+
+Node::VisitorId::~VisitorId() {
+  assert(current_visitor_id == id_);
+}
+
+bool LowNode::Visit(Node::VisitorId::type id) {
+  if (visitor_id_ == id)
+    return false;
+  visitor_id_ = id;
+  return true;
+}
+
+template<typename VisitorType, typename EdgeVisitorType>
+static void TreeWalk(const Node* node, bool as_opponent,
+                     Node::VisitorId::type id,
+                     VisitorType visitor, EdgeVisitorType edge) {
+  const std::shared_ptr<LowNode>& low_node = node->GetLowNode();
+  if (!low_node || !low_node->Visit(id)) {
+    return;
+  }
+
+  visitor(low_node.get(), as_opponent);
+
+  for (auto& child_edge : node->Edges()) {
+    auto child = child_edge.node();
+    if (child == nullptr) {
+      break;
+    }
+    edge(child, as_opponent, low_node.get());
+  }
+
+  for (auto& child_edge : node->Edges()) {
+    auto child = child_edge.node();
+    if (child == nullptr) {
+      return;
+    }
+    TreeWalk(child, !as_opponent, id, visitor, edge);
+  }
+}
+
 static std::string PtrToNodeName(const void* ptr) {
   std::ostringstream oss;
   oss << "n_" << ptr;
   return oss.str();
 }
 
-std::string LowNode::DotNodeString() const {
-  std::ostringstream oss;
+template<typename VisitorType, typename EdgeVisitorType>
+static void TreeWalk(const Node* node, bool as_opponent,
+                     VisitorType visitor, EdgeVisitorType edge) {
+  Node::VisitorId id{};
+  edge(node, as_opponent, nullptr);
+  TreeWalk(node, !as_opponent, id, visitor, edge);
+}
+
+void LowNode::DotNodeString(std::ofstream& oss) const {
   oss << PtrToNodeName(this) << " ["
       << "shape=box";
   // Adjust formatting to limit node size.
@@ -464,18 +526,16 @@ std::string LowNode::DotNodeString() const {
       << "\\n\\nThis=" << this << "\\nEdges=" << edges_.get()
       << "\\nNumEdges=" << static_cast<int>(num_edges_)
       << "\\nChild=" << child_.get() << "\\n\"";
-  oss << "];";
-  return oss.str();
+  oss << "];" << std::endl;
 }
 
-std::string Node::DotEdgeString(bool as_opponent, const LowNode* parent) const {
-  std::ostringstream oss;
+void Node::DotEdgeString(std::ofstream& oss, bool as_opponent, const LowNode* parent) const {
   oss << (parent == nullptr ? "top" : PtrToNodeName(parent)) << " -> "
       << (low_node_ ? PtrToNodeName(low_node_.get()) : PtrToNodeName(this))
       << " [";
   oss << "label=\""
       << (parent == nullptr ? "N/A" : GetMove(as_opponent).ToString(true))
-      << "\\lN=" << n_ << "\\lN_=" << n_in_flight_;
+      << "\\lN=" << n_ << "\\lN_=" << GetNInFlight();
   oss << "\\l\"";
   // Set precision for tooltip.
   oss << std::fixed << std::setprecision(5);
@@ -485,7 +545,7 @@ std::string Node::DotEdgeString(bool as_opponent, const LowNode* parent) const {
       << "\\nWL= " << wl_                             //
       << std::noshowpos                               //
       << "\\nD=" << d_ << "\\nM=" << m_ << "\\nN=" << n_
-      << "\\nN_=" << n_in_flight_
+      << "\\nN_=" << GetNInFlight()
       << "\\nTerm=" << static_cast<int>(terminal_type_)  //
       << std::showpos                                    //
       << "\\nBounds=" << static_cast<int>(lower_bound_) - 2 << ","
@@ -493,15 +553,10 @@ std::string Node::DotEdgeString(bool as_opponent, const LowNode* parent) const {
       << std::noshowpos                                               //
       << "\\nLowNode=" << low_node_.get() << "\\nParent=" << parent
       << "\\nIndex=" << index_ << "\\nSibling=" << sibling_.get() << "\\n\"";
-  oss << "];";
-  return oss.str();
+  oss << "];" << std::endl;
 }
 
-std::string Node::DotGraphString(bool as_opponent) const {
-  std::ostringstream oss;
-  std::unordered_set<const LowNode*> seen;
-  std::list<std::pair<const Node*, bool>> unvisited_fifo;
-
+void Node::DotGraphString(std::ofstream& oss, bool as_opponent) const {
   oss << "strict digraph {" << std::endl;
   oss << "edge ["
       << "headport=n"
@@ -514,83 +569,37 @@ std::string Node::DotGraphString(bool as_opponent) const {
       << "];" << std::endl;
   oss << "ranksep=" << 4.0f * std::log10(GetN()) << std::endl;
 
-  oss << DotEdgeString(!as_opponent) << std::endl;
-  if (low_node_) {
-    seen.insert(low_node_.get());
-    unvisited_fifo.push_back(std::pair(this, as_opponent));
-  }
-
-  while (!unvisited_fifo.empty()) {
-    auto [parent_node, parent_as_opponent] = unvisited_fifo.front();
-    unvisited_fifo.pop_front();
-
-    auto parent_low_node = parent_node->GetLowNode().get();
-    seen.insert(parent_low_node);
-    oss << parent_low_node->DotNodeString() << std::endl;
-
-    for (auto& child_edge : parent_node->Edges()) {
-      auto child = child_edge.node();
-      if (child == nullptr) break;
-
-      oss << child->DotEdgeString(parent_as_opponent) << std::endl;
-      auto child_low_node = child->GetLowNode().get();
-      if (child_low_node != nullptr &&
-          (seen.find(child_low_node) == seen.end())) {
-        seen.insert(child_low_node);
-        unvisited_fifo.push_back(std::pair(child, !parent_as_opponent));
-      }
-    }
-  }
+  TreeWalk(this, !as_opponent,
+    [&](const LowNode* low_node, bool) {
+      low_node->DotNodeString(oss);
+    },
+    [&](const Node* node, bool as_opponent, const LowNode* parent) {
+      node->DotEdgeString(oss, as_opponent, parent);
+    });
 
   oss << "}" << std::endl;
-
-  return oss.str();
 }
 
 bool Node::ZeroNInFlight() const {
-  std::unordered_set<const LowNode*> seen;
-  std::list<const Node*> unvisited_fifo;
   size_t nonzero_node_count = 0;
-
-  if (GetNInFlight() > 0) {
-    std::cerr << DebugString() << std::endl;
-    ++nonzero_node_count;
-  }
-  if (low_node_) {
-    seen.insert(low_node_.get());
-    unvisited_fifo.push_back(this);
-  }
-
-  while (!unvisited_fifo.empty()) {
-    auto parent_node = unvisited_fifo.front();
-    unvisited_fifo.pop_front();
-
-    for (auto& child_edge : parent_node->Edges()) {
-      auto child = child_edge.node();
-      if (child == nullptr) break;
-
-      if (child->GetNInFlight() > 0) {
-        std::cerr << child->DebugString() << std::endl;
+  TreeWalk(this, false,
+    [](const LowNode*, bool) {},
+    [&](const Node* node, bool, const LowNode*) {
+      if (node->GetNInFlight() > 0) [[unlikely]] {
+        CERR << node->DebugString() << std::endl;
         ++nonzero_node_count;
       }
-
-      auto child_low_node = child->GetLowNode().get();
-      if (child_low_node != nullptr &&
-          (seen.find(child_low_node) == seen.end())) {
-        seen.insert(child_low_node);
-        unvisited_fifo.push_back(child);
-      }
-    }
-  }
+    });
 
   if (nonzero_node_count > 0) {
-    std::cerr << "GetNInFlight() is nonzero on " << nonzero_node_count
+    CERR << "GetNInFlight() is nonzero on " << nonzero_node_count
               << " nodes" << std::endl;
     return false;
   }
 
   return true;
 }
+#endif
 
 void Node::SortEdges() const {
   assert(low_node_);
