@@ -1587,20 +1587,20 @@ void SearchWorker::PickNodesToExtend(int collision_limit)
 // safe two-fold or a draw by repetition and return the number of safe
 // repetitions and moves_left.
 // Depth starts with 0 at root, so number of plies in PV equals depth.
-std::pair<int, int> SearchWorker::GetRepetitions(int depth,
+std::pair<int, int> SearchWorker::GetRepetitions(int /*depth*/,
                                                  const Position& position) {
   const auto repetitions = position.GetRepetitions();
 
   if (repetitions == 0) return {0, 0};
 
   if (repetitions >= 2) return {repetitions, 0};
-
+#if 0
   const auto plies = position.GetPliesSincePrevRepetition();
   if (params_.GetTwoFoldDraws() && /*repetitions == 1 &&*/ depth >= 4 &&
       depth >= plies) {
     return {1, plies};
   }
-
+#endif
   return {0, 0};
 }
 
@@ -2069,9 +2069,18 @@ void SearchWorker::ExtendNode(NodeToProcess& picked_node) {
     }
   }
 
-  // Check the transposition table first and NN cache second before asking for
-  // NN evaluation.
-  picked_node.hash = history.HashLast(params_.GetCacheHistoryLength() + 1);
+  // Check the transposition table first before asking for NN evaluation.
+  // The board Hash() doesn't include repetitions, unlike the position Hash().
+  auto positions = history.GetPositions();
+  auto it = positions.rbegin();
+  auto hash = it->GetBoard().Hash();
+  for (++it; it != positions.rend(); ++it) {
+    if (it->GetRule50Ply() < 4) break;
+    if (it->GetRepetitions()) {
+      hash ^= it->Hash();
+    }
+  }
+  picked_node.hash = HashCat(hash, history.Last().GetRule50Ply());
   auto tt_iter = search_->tt_->find(picked_node.hash);
   // Transposition table entry might be expired.
   if (tt_iter != search_->tt_->end()) {
