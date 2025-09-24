@@ -2074,7 +2074,7 @@ void SearchWorker::ExtendNode(NodeToProcess& picked_node) {
   auto positions = history.GetPositions();
   auto it = positions.rbegin();
   auto hash = it->GetBoard().Hash();
-  for (++it; it != positions.rend(); ++it) {
+  for (; it != positions.rend(); ++it) {
     if (it->GetRule50Ply() < 4) break;
     if (it->GetRepetitions()) {
       hash ^= it->Hash();
