@@ -69,6 +69,13 @@ class DemuxingComputation final : public NetworkComputation {
 
  public:
   DemuxingComputation(DemuxingNetwork* network) : network_(network) {}
+  ~DemuxingComputation() {
+    // Wait for other threads to stop using this thread. It must be spinloop for
+    // correct synchronization between notify_one and destructor.
+    while (dataready_.load(std::memory_order_acquire) != -1) {
+      SpinloopPause();
+    }
+  }
 
   void AddInput(InputPlanes&& input) override {
     planes_.emplace_back(std::move(input));
@@ -104,8 +111,11 @@ class DemuxingComputation final : public NetworkComputation {
 
   void NotifyComplete() {
     if (1 == dataready_.fetch_sub(1, std::memory_order_release)) {
-      std::lock_guard lock(mutex_);
+      {
+        std::lock_guard lock(mutex_);
+      }
       dataready_cv_.notify_one();
+      dataready_.store(-1, std::memory_order_release);
     }
   }
 
@@ -318,7 +328,7 @@ void DemuxingComputation::ComputeBlocking() {
   // Wait until all backends complete their work.
   std::unique_lock<std::mutex> lock(mutex_);
   dataready_cv_.wait(lock, [this]() {
-    return dataready_.load(std::memory_order_acquire) == 0;
+    return dataready_.load(std::memory_order_acquire) <= 0;
   });
 }
 
