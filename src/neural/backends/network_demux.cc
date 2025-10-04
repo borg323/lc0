@@ -126,7 +126,7 @@ class DemuxingComputation final : public NetworkComputation {
 
   std::mutex mutex_;
   std::condition_variable dataready_cv_;
-  std::atomic<int> dataready_ = 0;
+  std::atomic<int> dataready_ = -1;
 
   friend class DemuxingBackend;
 };
