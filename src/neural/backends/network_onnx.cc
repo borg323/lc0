@@ -104,7 +104,7 @@ class OnnxNetwork : public Network {
                              : batch_size_ * steps_;
   }
   int GetPreferredBatchStep() const override {
-    return batch_size_ == -1 ? 1 : batch_size_;
+    return batch_size_ == -1 ? min_batch_size_ : batch_size_;
   }
   bool IsCpu() const override { return provider_ == OnnxProvider::CPU; }
 

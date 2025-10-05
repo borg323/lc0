@@ -171,6 +171,7 @@ class BlasNetwork : public Network {
   }
 
   int GetMiniBatchSize() const override { return 7; }
+  int GetPreferredBatchStep() const override { return 3; }
 
   bool IsCpu() const override { return true; }
 
