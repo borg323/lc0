@@ -76,6 +76,7 @@ void CudaError(cudaError_t status, const char* file, int line) {
   if (status != cudaSuccess) {
     auto err = std::string("CUDA error: ") + cudaGetErrorString(status) + " (" +
                file + ":" + std::to_string(line) + ") ";
+    CERR << err;
     throw Exception(err);
   }
 }
@@ -89,6 +90,12 @@ struct InputsOutputs {
       case OnnxProvider::CUDA:
       case OnnxProvider::TRT:
 #ifdef CUDART_VERSION
+        for (cudaGraphExec_t graph : cuda_graphs_) {
+          if (graph) {
+            ReportCUDAErrors(cudaGraphExecDestroy(graph));
+          }
+        }
+        ReportCUDAErrors(cudaStreamDestroy(exec_stream_));
         ReportCUDAErrors(cudaEventDestroy(inputs_uploaded_event_));
         ReportCUDAErrors(cudaEventDestroy(inputs_processed_event_));
         ReportCUDAErrors(cudaEventDestroy(evaluation_done_event_));
@@ -124,6 +131,8 @@ struct InputsOutputs {
   cudaEvent_t inputs_processed_event_ = nullptr;
   cudaEvent_t evaluation_done_event_ = nullptr;
   cudaEvent_t outputs_download_event_ = nullptr;
+  cudaStream_t exec_stream_ = nullptr;
+  std::vector<cudaGraphExec_t> cuda_graphs_;
 #endif
 };
 
@@ -135,6 +144,8 @@ class OnnxComputation final : public NetworkComputation {
   void AddInput(InputPlanes&& input) override;
   int GetBatchSize() const override;
   void ComputeBlocking() override;
+  void ComputeBlockingImpl();
+  void CaptureCudaGraph();
   float GetQVal(int sample) const override;
   float GetDVal(int sample) const override;
   float GetPVal(int sample, int move_id) const override;
@@ -221,6 +232,7 @@ class OnnxNetwork final : public Network {
   cudaStream_t compute_stream_ = nullptr;
   cudaStream_t upload_stream_ = nullptr;
   cudaStream_t download_stream_ = nullptr;
+  cudaEvent_t compute_ordering_event_ = nullptr;
 #endif
 
  private:
@@ -256,6 +268,9 @@ InputsOutputs::InputsOutputs(OnnxNetwork* network)
     case OnnxProvider::CUDA:
     case OnnxProvider::TRT:
 #ifdef CUDART_VERSION
+      ReportCUDAErrors(cudaStreamCreate(&exec_stream_));
+      cuda_graphs_ =
+          std::vector<cudaGraphExec_t>(network->max_batch_size_, nullptr);
       ReportCUDAErrors(
           cudaEventCreate(&inputs_processed_event_, cudaEventDisableTiming));
       ReportCUDAErrors(
@@ -308,6 +323,10 @@ InputsOutputs::InputsOutputs(OnnxNetwork* network)
 OnnxNetwork::~OnnxNetwork() {
 #ifdef CUDART_VERSION
   if (provider_ == OnnxProvider::TRT || provider_ == OnnxProvider::CUDA) {
+    ReportCUDAErrors(cudaEventDestroy(compute_ordering_event_));
+    ReportCUDAErrors(cudaStreamDestroy(compute_stream_));
+    ReportCUDAErrors(cudaStreamDestroy(upload_stream_));
+    ReportCUDAErrors(cudaStreamDestroy(download_stream_));
   }
 #endif
 }
@@ -478,7 +497,62 @@ Ort::IoBinding OnnxComputation<DataType>::PrepareInputs(int start,
 }
 
 template <typename DataType>
+void OnnxComputation<DataType>::CaptureCudaGraph() {
+  std::unique_lock lock(network_->lock_);
+  cudaGraph_t graph = nullptr;
+  ReportCUDAErrors(cudaStreamBeginCapture(network_->upload_stream_,
+                                          cudaStreamCaptureModeThreadLocal));
+  ComputeBlockingImpl();
+  ReportCUDAErrors(cudaStreamEndCapture(network_->upload_stream_, &graph));
+  ReportCUDAErrors(
+      cudaGraphInstantiate(&inputs_outputs_->cuda_graphs_[GetBatchSize() - 1],
+                           graph, cudaGraphInstantiateFlagAutoFreeOnLaunch));
+  ReportCUDAErrors(
+      cudaGraphUpload(inputs_outputs_->cuda_graphs_[GetBatchSize() - 1],
+                      inputs_outputs_->exec_stream_));
+  ReportCUDAErrors(cudaGraphDestroy(graph));
+}
+
+template <typename DataType>
 void OnnxComputation<DataType>::ComputeBlocking() {
+#ifdef CUDART_VERSION
+  if (network_->provider_ == OnnxProvider::TRT ||
+      network_->provider_ == OnnxProvider::CUDA) {
+    assert(GetBatchSize() > 0);
+    cudaGraphExec_t& graph = inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
+    if (!graph) {
+      CaptureCudaGraph();
+    }
+    ReportCUDAErrors(cudaGraphLaunch(graph, inputs_outputs_->exec_stream_));
+  } else
+#endif
+  {
+    // The DML onnxruntime execution provider is documented as not supporting
+    // multi-threaded calls to Run on the same inference session. We found the
+    // same to be true for the ROCm execution provider (at least for CNNs).
+    // TODO: This may be a onnxruntime/ROCm bug, check onnxruntime 1.16 release.
+    if (network_->provider_ == OnnxProvider::DML ||
+        network_->provider_ == OnnxProvider::ROCM ||
+        network_->provider_ == OnnxProvider::TRT) {
+      network_->lock_.lock();
+    }
+    ComputeBlockingImpl();
+    if (network_->provider_ == OnnxProvider::DML ||
+        network_->provider_ == OnnxProvider::ROCM ||
+        network_->provider_ == OnnxProvider::TRT) {
+      network_->lock_.unlock();
+    }
+  }
+#ifdef CUDART_VERSION
+  if (network_->provider_ == OnnxProvider::TRT ||
+      network_->provider_ == OnnxProvider::CUDA) {
+    ReportCUDAErrors(cudaStreamSynchronize(inputs_outputs_->exec_stream_));
+  }
+#endif
+}
+
+template <typename DataType>
+void OnnxComputation<DataType>::ComputeBlockingImpl() {
   int batch_size = network_->batch_size_;
   if (batch_size < 0) {
     batch_size =
@@ -494,24 +568,13 @@ void OnnxComputation<DataType>::ComputeBlocking() {
 
     auto binding = PrepareInputs(i, batch, step);
 
-    // The DML onnxruntime execution provider is documented as not supporting
-    // multi-threaded calls to Run on the same inference session. We found the
-    // same to be true for the ROCm execution provider (at least for CNNs).
-    // TODO: This may be a onnxruntime/ROCm bug, check onnxruntime 1.16 release.
-    if (network_->provider_ == OnnxProvider::DML ||
-        network_->provider_ == OnnxProvider::ROCM ||
-        network_->provider_ == OnnxProvider::TRT) {
-      network_->lock_.lock();
-    }
     Ort::RunOptions options = {};
 #ifdef CUDART_VERSION
+    cudaStreamCaptureStatus capture_status;
     if (network_->provider_ == OnnxProvider::TRT ||
         network_->provider_ == OnnxProvider::CUDA) {
-      if (i == 0) {
-        ReportCUDAErrors(
-            cudaStreamWaitEvent(network_->upload_stream_,
-                                inputs_outputs_->inputs_processed_event_));
-      }
+      ReportCUDAErrors(
+          cudaStreamIsCapturing(network_->upload_stream_, &capture_status));
       const char* src_masks =
           static_cast<char*>(inputs_outputs_->input_tensor_data_);
       char* dst_masks =
@@ -555,10 +618,10 @@ void OnnxComputation<DataType>::ComputeBlocking() {
 
       ReportCUDAErrors(cudaEventRecord(inputs_outputs_->inputs_processed_event_,
                                        network_->upload_stream_));
-      if (i == 0) {
-        ReportCUDAErrors(
-            cudaStreamWaitEvent(network_->compute_stream_,
-                                inputs_outputs_->outputs_download_event_));
+      if (capture_status == cudaStreamCaptureStatusActive) {
+        ReportCUDAErrors(cudaStreamWaitEvent(network_->compute_stream_,
+                                             network_->compute_ordering_event_,
+                                             cudaEventWaitExternal));
       }
       options.AddConfigEntry("disable_synchronize_execution_providers", "1");
     } else {
@@ -569,6 +632,11 @@ void OnnxComputation<DataType>::ComputeBlocking() {
 #ifdef CUDART_VERSION
     if (network_->provider_ == OnnxProvider::TRT ||
         network_->provider_ == OnnxProvider::CUDA) {
+      if (capture_status == cudaStreamCaptureStatusActive) {
+        ReportCUDAErrors(cudaEventRecordWithFlags(
+            network_->compute_ordering_event_, network_->compute_stream_,
+            cudaEventRecordExternal));
+      }
       for (size_t j = 0; j < inputs_outputs_->output_tensors_step_.size();
            j++) {
         ReportCUDAErrors(
@@ -594,18 +662,13 @@ void OnnxComputation<DataType>::ComputeBlocking() {
       binding.SynchronizeOutputs();
     }
 #endif
-    if (network_->provider_ == OnnxProvider::DML ||
-        network_->provider_ == OnnxProvider::ROCM ||
-        network_->provider_ == OnnxProvider::TRT) {
-      network_->lock_.unlock();
-    }
     i += batch;
   }
 #ifdef CUDART_VERSION
   if (network_->provider_ == OnnxProvider::TRT ||
       network_->provider_ == OnnxProvider::CUDA) {
-    ReportCUDAErrors(
-        cudaEventSynchronize(inputs_outputs_->outputs_download_event_));
+    ReportCUDAErrors(cudaStreamWaitEvent(
+        network_->upload_stream_, inputs_outputs_->outputs_download_event_, 0));
   }
 #endif
 }
@@ -660,7 +723,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_timing_cache_path"] = cache_dir;
       trt_options["trt_layer_norm_fp32_fallback"] = "1";
       trt_options["trt_force_sequential_engine_build"] = "1";
-        trt_options["trt_context_memory_sharing_enable"] = "1";
+      trt_options["trt_context_memory_sharing_enable"] = "1";
       // Looks like we need I/O binding to enable this.
 #if CUDART_VERSION
       trt_options["has_user_compute_stream"] = "1";
@@ -812,6 +875,8 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       ReportCUDAErrors(cudaStreamCreate(&compute_stream_));
       ReportCUDAErrors(cudaStreamCreate(&upload_stream_));
       ReportCUDAErrors(cudaStreamCreate(&download_stream_));
+      ReportCUDAErrors(
+          cudaEventCreate(&compute_ordering_event_, cudaEventDisableTiming));
       break;
 #endif
     default:
@@ -822,6 +887,40 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     session_.emplace_back(onnx_env_, file.onnx_model().model().data(),
                           file.onnx_model().model().size(),
                           GetOptions(threads, batch_size_ * step, hash));
+#if CUDART_VERSION
+  if (provider == OnnxProvider::TRT || provider == OnnxProvider::CUDA) {
+    auto init_graphs = [&](auto data_type_tag) {
+      using DataType = decltype(data_type_tag);
+      OnnxComputation<DataType> comp1(this);
+      OnnxComputation<DataType> comp2(this);
+      InputPlanes planes(kInputPlanes);
+      for (int step = 1; step <= steps_; step++) {
+        int start = batch_size_ > 0 ? batch_size_ * step - batch_size_ : 0;
+        int end = batch_size_ > 0 ? batch_size_ * step : max_batch_size_ / 4;
+        for (int batch_size = start; batch_size < end; batch_size++) {
+          comp1.AddInput(std::move(planes));
+          comp2.AddInput(std::move(planes));
+          // Initialize the session
+          if (batch_size == start) {
+            comp1.ComputeBlockingImpl();
+          }
+
+          if (batch_size >= max_batch_size_ / 4) continue;
+
+          comp1.CaptureCudaGraph();
+          comp2.CaptureCudaGraph();
+        }
+      }
+    };
+    if (fp16_) {
+      init_graphs(Ort::Float16_t{});
+    } else if (bf16_) {
+      init_graphs(Ort::BFloat16_t{});
+    } else {
+      init_graphs(float{});
+    }
+  }
+#endif
 }
 
 template <OnnxProvider kProvider>
