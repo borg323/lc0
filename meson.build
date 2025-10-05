@@ -596,6 +596,19 @@ if get_option('build_backends')
                        dirs: get_option('onnx_libdir'), required: false).found()
       add_project_arguments('-DUSE_ROCM', language : 'cpp')
     endif
+    if cu_dart.found()
+      deps += cu_dart
+      foreach d : get_option('cudnn_include')
+        if run_command('scripts/checkdir.py', d, check : false).returncode() == 0
+          includes += include_directories(d, is_system: true)
+        endif
+      endforeach
+      files += custom_target('cuda onnx code',
+        input : 'src/neural/backends/cuda/onnx.cu',
+        output : outputname,
+        command : [nvcc, nvcc_extra_args, cuda_arguments]
+        )
+    endif
     has_backends = true
   endif
 
