@@ -51,6 +51,7 @@ struct WeightsToOnnxConverterOptions {
   bool no_shape = false;       // Avoid use of "Shape" operator.
   bool fold_matmul = false;    // Do matmul constant folding (increases size).
   bool use_einsum = false;     // Allow use of Einsum operator.
+  bool no_wdl_softmax = false; // Skip wdl softmax.
   std::string policy_head = "vanilla";
   std::string value_head = "winner";
 
