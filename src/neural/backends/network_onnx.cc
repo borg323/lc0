@@ -508,7 +508,6 @@ Ort::IoBinding OnnxComputation<DataType>::PrepareInputs(int start,
 
 template <typename DataType>
 void OnnxComputation<DataType>::CaptureCudaGraph() {
-  std::unique_lock lock(network_->lock_);
   cudaGraph_t graph = nullptr;
   ReportCUDAErrors(cudaStreamBeginCapture(network_->upload_stream_,
                                           cudaStreamCaptureModeThreadLocal));
@@ -529,6 +528,7 @@ void OnnxComputation<DataType>::ComputeBlocking() {
   if (network_->provider_ == OnnxProvider::TRT ||
       network_->provider_ == OnnxProvider::CUDA) {
     assert(GetBatchSize() > 0);
+    std::unique_lock lock(network_->lock_);
     cudaGraphExec_t& graph = inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
     if (!graph) {
       CaptureCudaGraph();
