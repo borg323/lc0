@@ -170,9 +170,8 @@ class OnnxNetwork final : public Network {
               OnnxProvider provider, bool cpu_wdl);
   ~OnnxNetwork();
   std::unique_ptr<NetworkComputation> NewComputation() override {
-#if USE_ONNX_CUDART
+#if CUDART_VERSION
     if (provider_ == OnnxProvider::CUDA || provider_ == OnnxProvider::TRT) {
-      CERR << std::this_thread::get_id() << " cudaSetDevice(" <<  gpu_ << ")";
       ReportCUDAErrors(cudaSetDevice(gpu_));
     }
 #endif
@@ -280,11 +279,6 @@ InputsOutputs::InputsOutputs(OnnxNetwork* network)
     case OnnxProvider::CUDA:
     case OnnxProvider::TRT:
 #ifdef CUDART_VERSION
-      {
-        int dev;
-        ReportCUDAErrors(cudaGetDevice(&dev));
-        CERR << std::this_thread::get_id() << " InputsOutputs(" <<  network->gpu_ << " == " << dev << ")";
-      }
       ReportCUDAErrors(cudaStreamCreate(&exec_stream_));
       cuda_graphs_ =
           std::vector<cudaGraphExec_t>(network->max_batch_size_, nullptr);
@@ -533,9 +527,6 @@ void OnnxComputation<DataType>::ComputeBlocking() {
 #ifdef CUDART_VERSION
   if (network_->provider_ == OnnxProvider::TRT ||
       network_->provider_ == OnnxProvider::CUDA) {
-    int dev;
-    ReportCUDAErrors(cudaGetDevice(&dev));
-    CERR << std::this_thread::get_id() << " ComputeBlocking(" <<  network_->gpu_ << " == " << dev << ")";
     assert(GetBatchSize() > 0);
     std::unique_lock lock(network_->lock_);
     cudaGraphExec_t& graph = inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
@@ -638,9 +629,6 @@ void OnnxComputation<DataType>::ComputeBlockingImpl() {
                                        network_->upload_stream_));
       ReportCUDAErrors(cudaStreamWaitEvent(
           network_->compute_stream_, inputs_outputs_->inputs_uploaded_event_));
-      int dev;
-      ReportCUDAErrors(cudaGetDevice(&dev));
-      CERR << std::this_thread::get_id() << " before expandPlanesOnnx(" <<  network_->gpu_ << " == " << dev << ")";
       if (network_->fp16_) {
         half* dst =
             reinterpret_cast<half*>(inputs_outputs_->input_tensor_data_device_);
@@ -930,7 +918,6 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     case OnnxProvider::TRT:
     case OnnxProvider::CUDA:
 #if CUDART_VERSION
-      CERR << std::this_thread::get_id() << " cudaSetDevice(" <<  gpu_ << ")";
       ReportCUDAErrors(cudaSetDevice(gpu_));
       ReportCUDAErrors(cudaStreamCreate(&compute_stream_));
       ReportCUDAErrors(cudaStreamCreate(&upload_stream_));
