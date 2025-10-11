@@ -19,8 +19,8 @@ for:
 -
   matrix:
     only:
-#    - NAME: gpu-nvidia-cudnn
-#    - NAME: gpu-nvidia-cuda11
+    - NAME: gpu-nvidia-cudnn
+    - NAME: gpu-nvidia-cuda11
 #    - NAME: gpu-opencl
 #    - NAME: cpu-dnnl
 #    - NAME: cpu-openblas
