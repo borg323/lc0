@@ -280,7 +280,7 @@ InputsOutputs::InputsOutputs(OnnxNetwork* network)
     case OnnxProvider::CUDA:
     case OnnxProvider::TRT:
 #ifdef CUDART_VERSION
-      ReportCUDAErrors(cudaStreamCreate(&exec_stream_));
+      ReportCUDAErrors(cudaStreamCreateWithFlags(&exec_stream_, cudaStreamNonBlocking));
       cuda_graphs_ =
           std::vector<cudaGraphExec_t>(network->max_batch_size_, nullptr);
       ReportCUDAErrors(
@@ -931,9 +931,9 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     case OnnxProvider::CUDA:
 #if CUDART_VERSION
       ReportCUDAErrors(cudaSetDevice(gpu_));
-      ReportCUDAErrors(cudaStreamCreate(&compute_stream_));
-      ReportCUDAErrors(cudaStreamCreate(&upload_stream_));
-      ReportCUDAErrors(cudaStreamCreate(&download_stream_));
+      ReportCUDAErrors(cudaStreamCreateWithFlags(&compute_stream_, cudaStreamNonBlocking));
+      ReportCUDAErrors(cudaStreamCreateWithFlags(&upload_stream_, cudaStreamNonBlocking));
+      ReportCUDAErrors(cudaStreamCreateWithFlags(&download_stream_, cudaStreamNonBlocking));
       ReportCUDAErrors(
           cudaEventCreate(&compute_ordering_event_, cudaEventDisableTiming));
       break;
