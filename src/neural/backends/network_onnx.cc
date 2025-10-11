@@ -530,12 +530,15 @@ void OnnxComputation<DataType>::ComputeBlocking() {
        network_->provider_ == OnnxProvider::CUDA) &&
       network_->graphs_enabled_) {
     assert(GetBatchSize() > 0);
-    std::unique_lock lock(network_->lock_);
-    cudaGraphExec_t& graph = inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
-    if (!graph) {
-      CaptureCudaGraph();
+    {
+      std::unique_lock lock(network_->lock_);
+      cudaGraphExec_t& graph =
+          inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
+      if (!graph) {
+        CaptureCudaGraph();
+      }
+      ReportCUDAErrors(cudaGraphLaunch(graph, inputs_outputs_->exec_stream_));
     }
-    ReportCUDAErrors(cudaGraphLaunch(graph, inputs_outputs_->exec_stream_));
     ReportCUDAErrors(cudaStreamSynchronize(inputs_outputs_->exec_stream_));
   } else
 #endif
@@ -556,11 +559,11 @@ void OnnxComputation<DataType>::ComputeBlocking() {
       network_->lock_.unlock();
     }
 #ifdef CUDART_VERSION
-  if (network_->provider_ == OnnxProvider::TRT ||
-      network_->provider_ == OnnxProvider::CUDA) {
-    ReportCUDAErrors(cudaEventSynchronize(
-        inputs_outputs_->outputs_download_event_));
-  }
+    if (network_->provider_ == OnnxProvider::TRT ||
+        network_->provider_ == OnnxProvider::CUDA) {
+      ReportCUDAErrors(
+          cudaEventSynchronize(inputs_outputs_->outputs_download_event_));
+    }
 #endif
   }
   if (network_->wdl_head_ != -1) {
