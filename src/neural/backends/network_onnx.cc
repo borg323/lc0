@@ -536,6 +536,7 @@ void OnnxComputation<DataType>::ComputeBlocking() {
       CaptureCudaGraph();
     }
     ReportCUDAErrors(cudaGraphLaunch(graph, inputs_outputs_->exec_stream_));
+    ReportCUDAErrors(cudaStreamSynchronize(inputs_outputs_->exec_stream_));
   } else
 #endif
   {
@@ -554,13 +555,14 @@ void OnnxComputation<DataType>::ComputeBlocking() {
         network_->provider_ == OnnxProvider::TRT) {
       network_->lock_.unlock();
     }
-  }
 #ifdef CUDART_VERSION
   if (network_->provider_ == OnnxProvider::TRT ||
       network_->provider_ == OnnxProvider::CUDA) {
-    ReportCUDAErrors(cudaStreamSynchronize(inputs_outputs_->exec_stream_));
+    ReportCUDAErrors(cudaEventSynchronize(
+        inputs_outputs_->outputs_download_event_));
   }
 #endif
+  }
   if (network_->wdl_head_ != -1) {
     const DataType* data = static_cast<DataType*>(
         inputs_outputs_->output_tensors_data_[network_->wdl_head_]);
