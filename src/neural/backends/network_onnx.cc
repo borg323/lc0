@@ -947,7 +947,8 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
                           file.onnx_model().model().size(),
                           GetOptions(threads, batch_size_ * step, hash));
 #if CUDART_VERSION
-  if (provider == OnnxProvider::TRT || provider == OnnxProvider::CUDA) {
+  if ((provider == OnnxProvider::TRT || provider == OnnxProvider::CUDA) &&
+      graphs_enabled_) {
     auto init_graphs = [&](auto data_type_tag) {
       using DataType = decltype(data_type_tag);
       OnnxComputation<DataType> comp1(this);
