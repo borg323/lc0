@@ -229,6 +229,7 @@ class OnnxNetwork final : public Network {
   bool fp16_;
   bool bf16_;
   bool cpu_wdl_;
+  bool graphs_enabled_ = true;
   // The batch size to use, or -1 for variable.
   int batch_size_;
   // The lower limit for variable batch size.
@@ -525,8 +526,9 @@ void OnnxComputation<DataType>::CaptureCudaGraph() {
 template <typename DataType>
 void OnnxComputation<DataType>::ComputeBlocking() {
 #ifdef CUDART_VERSION
-  if (network_->provider_ == OnnxProvider::TRT ||
-      network_->provider_ == OnnxProvider::CUDA) {
+  if ((network_->provider_ == OnnxProvider::TRT ||
+       network_->provider_ == OnnxProvider::CUDA) &&
+      network_->graphs_enabled_) {
     assert(GetBatchSize() > 0);
     std::unique_lock lock(network_->lock_);
     cudaGraphExec_t& graph = inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
@@ -591,6 +593,14 @@ void OnnxComputation<DataType>::ComputeBlockingImpl() {
     batch_size =
         std::max(static_cast<int>(GetBatchSize()), network_->min_batch_size_);
   }
+#ifdef CUDART_VERSION
+  cudaStreamCaptureStatus capture_status;
+  if (network_->provider_ == OnnxProvider::TRT ||
+      network_->provider_ == OnnxProvider::CUDA) {
+    ReportCUDAErrors(
+        cudaStreamIsCapturing(network_->upload_stream_, &capture_status));
+  }
+#endif
   for (size_t i = 0; i < (size_t)GetBatchSize();) {
     int step = (GetBatchSize() - i + batch_size - 1) / batch_size;
     if (step > network_->steps_) step = network_->steps_;
@@ -603,11 +613,8 @@ void OnnxComputation<DataType>::ComputeBlockingImpl() {
 
     Ort::RunOptions options = {};
 #ifdef CUDART_VERSION
-    cudaStreamCaptureStatus capture_status;
     if (network_->provider_ == OnnxProvider::TRT ||
         network_->provider_ == OnnxProvider::CUDA) {
-      ReportCUDAErrors(
-          cudaStreamIsCapturing(network_->upload_stream_, &capture_status));
       const char* src_masks =
           static_cast<char*>(inputs_outputs_->input_tensor_data_);
       char* dst_masks =
@@ -698,8 +705,9 @@ void OnnxComputation<DataType>::ComputeBlockingImpl() {
     i += batch;
   }
 #ifdef CUDART_VERSION
-  if (network_->provider_ == OnnxProvider::TRT ||
-      network_->provider_ == OnnxProvider::CUDA) {
+  if ((network_->provider_ == OnnxProvider::TRT ||
+       network_->provider_ == OnnxProvider::CUDA) &&
+      capture_status == cudaStreamCaptureStatusActive) {
     ReportCUDAErrors(cudaStreamWaitEvent(
         network_->upload_stream_, inputs_outputs_->outputs_download_event_, 0));
   }
@@ -840,6 +848,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   onnx_env_.DisableTelemetryEvents();
 
   gpu_ = opts.GetOrDefault<int>("gpu", 0);
+  graphs_enabled_ = opts.GetOrDefault<int>("enable_graphs", 1);
 
 #ifdef CUDART_VERSION
   if (provider_ == OnnxProvider::CUDA || provider_ == OnnxProvider::TRT) {
