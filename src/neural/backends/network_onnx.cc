@@ -234,6 +234,7 @@ class OnnxNetwork final : public Network {
   int batch_size_;
   // The lower limit for variable batch size.
   int min_batch_size_;
+  int opt_batch_size_;
   int gpu_;
   static constexpr int max_batch_size_ = 1024;
   // For conditional locking if running the DML/ROCM/TRT provider.
@@ -280,7 +281,8 @@ InputsOutputs::InputsOutputs(OnnxNetwork* network)
     case OnnxProvider::CUDA:
     case OnnxProvider::TRT:
 #ifdef CUDART_VERSION
-      ReportCUDAErrors(cudaStreamCreateWithFlags(&exec_stream_, cudaStreamNonBlocking));
+      ReportCUDAErrors(
+          cudaStreamCreateWithFlags(&exec_stream_, cudaStreamNonBlocking));
       cuda_graphs_ =
           std::vector<cudaGraphExec_t>(network->max_batch_size_, nullptr);
       ReportCUDAErrors(
@@ -514,9 +516,9 @@ void OnnxComputation<DataType>::CaptureCudaGraph() {
                                           cudaStreamCaptureModeThreadLocal));
   ComputeBlockingImpl();
   ReportCUDAErrors(cudaStreamEndCapture(network_->upload_stream_, &graph));
-  ReportCUDAErrors(
-      cudaGraphInstantiate(&inputs_outputs_->cuda_graphs_[GetBatchSize() - 1],
-                           graph, cudaGraphInstantiateFlagAutoFreeOnLaunch));
+  ReportCUDAErrors(cudaGraphInstantiateWithFlags(
+      &inputs_outputs_->cuda_graphs_[GetBatchSize() - 1], graph,
+      cudaGraphInstantiateFlagAutoFreeOnLaunch));
   ReportCUDAErrors(
       cudaGraphUpload(inputs_outputs_->cuda_graphs_[GetBatchSize() - 1],
                       inputs_outputs_->exec_stream_));
@@ -760,7 +762,9 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       oss << std::hex << hash;
       trt_options["trt_engine_cache_prefix"] =
           "Lc0_ONNX_TRT_ORT_" + Ort::GetVersionString() + "_batch_" +
-          (batch_size < 0 ? std::to_string(batch_size)
+          (batch_size < 0 ? std::to_string(batch_size) + "-" +
+                                std::to_string(min_batch_size_) + "-" +
+                                std::to_string(opt_batch_size_)
                           : std::to_string(batch_size - batch_size_ + 1) + "-" +
                                 std::to_string(batch_size)) +
           "_" + oss.str() + "_";
@@ -780,7 +784,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
         trt_options["trt_profile_max_shapes"] =
             inputs_[0] + ":" + std::to_string(max_batch_size_) + "x112x8x8";
         trt_options["trt_profile_opt_shapes"] =
-            inputs_[0] + ":" + std::to_string(max_batch_size_ / 4) + "x112x8x8";
+            inputs_[0] + ":" + std::to_string(opt_batch_size_) + "x112x8x8";
       } else {
         trt_options["trt_profile_min_shapes"] =
             inputs_[0] + ":" + std::to_string(batch_size - batch_size_ + 1) +
@@ -889,6 +893,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       opts.GetOrDefault<int>("steps", provider == OnnxProvider::DML ? 4 : 1);
   min_batch_size_ = opts.GetOrDefault<int>(
       "min_batch", provider == OnnxProvider::TRT ? 4 : 1);
+  opt_batch_size_ = opts.GetOrDefault<int>("optimize_batch", 256);
 
   // Sanity checks.
   if (batch_size_ <= 0) {
@@ -931,9 +936,12 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     case OnnxProvider::CUDA:
 #if CUDART_VERSION
       ReportCUDAErrors(cudaSetDevice(gpu_));
-      ReportCUDAErrors(cudaStreamCreateWithFlags(&compute_stream_, cudaStreamNonBlocking));
-      ReportCUDAErrors(cudaStreamCreateWithFlags(&upload_stream_, cudaStreamNonBlocking));
-      ReportCUDAErrors(cudaStreamCreateWithFlags(&download_stream_, cudaStreamNonBlocking));
+      ReportCUDAErrors(
+          cudaStreamCreateWithFlags(&compute_stream_, cudaStreamNonBlocking));
+      ReportCUDAErrors(
+          cudaStreamCreateWithFlags(&upload_stream_, cudaStreamNonBlocking));
+      ReportCUDAErrors(
+          cudaStreamCreateWithFlags(&download_stream_, cudaStreamNonBlocking));
       ReportCUDAErrors(
           cudaEventCreate(&compute_ordering_event_, cudaEventDisableTiming));
       break;
