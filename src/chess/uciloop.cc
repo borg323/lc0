@@ -63,7 +63,7 @@ const std::unordered_map<std::string, std::unordered_set<std::string>>
     kKnownCommands = {
         {{"uci"}, {}},
         {{"isready"}, {}},
-        {{"setoption"}, {"context", "name", "value"}},
+        {{"setoption"}, {"name", "value"}},
         {{"ucinewgame"}, {}},
         {{"position"}, {"fen", "startpos", "moves"}},
         {{"go"},
@@ -92,6 +92,26 @@ ParseCommand(const std::string& line) {
   const auto command = kKnownCommands.find(token);
   if (command == kKnownCommands.end()) {
     throw Exception("Unknown command: " + line);
+  }
+
+  // Special parsing for setoption to keep strings unmodified.
+  if (command->first == "setoption") {
+    iss >> token;
+    if (token != "name") {
+      throw Exception("setoption must be followed by name");
+    }
+    int name_pos = iss.eof() ? line.length() : static_cast<int>(iss.tellg());
+    std::optional<int> value_pos;
+    while (iss >> token) {
+      if (token == "value") {
+        value_pos = iss.eof() ? line.length() : static_cast<int>(iss.tellg());
+        params["value"] = Trim(line.substr(*value_pos));
+        break;
+      }
+    }
+    params["name"] = Trim(line.substr(
+        name_pos, value_pos ? *value_pos - name_pos - 5 : std::string::npos));
+    return {"setoption", params};
   }
 
   std::string whitespace;
@@ -139,7 +159,7 @@ int GetNumeric(const std::unordered_map<std::string, std::string>& params,
 
 bool ContainsKey(const std::unordered_map<std::string, std::string>& params,
                  const std::string& key) {
-  return params.find(key) != params.end();
+  return params.contains(key);
 }
 }  // namespace
 
@@ -164,9 +184,12 @@ bool UciLoop::DispatchCommand(
     engine_->EnsureReady();
     uci_responder_->SendRawResponse("readyok");
   } else if (command == "setoption") {
-    options_->SetUciOption(GetOrEmpty(params, "name"),
-                           GetOrEmpty(params, "value"),
-                           GetOrEmpty(params, "context"));
+    if (GetOrEmpty(params, "name").empty()) {
+      throw Exception("setoption requires name");
+    } else {
+      options_->SetUciOption(GetOrEmpty(params, "name"),
+                             GetOrEmpty(params, "value"));
+    }
   } else if (command == "ucinewgame") {
     engine_->NewGame();
   } else if (command == "position") {
@@ -235,7 +258,7 @@ bool UciLoop::ProcessLine(const std::string& line) {
 
 void StringUciResponder::PopulateParams(OptionsParser* options) {
   options->Add<BoolOption>(kUciChess960) = false;
-  options->Add<BoolOption>(kShowWDL) = true;
+  options->Add<BoolOption>(kShowWDL) = false;
   options->Add<BoolOption>(kShowMovesleft) = false;
   options_ = &options->GetOptionsDict();
 }
