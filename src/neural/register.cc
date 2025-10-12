@@ -75,9 +75,8 @@ std::unique_ptr<Backend> BackendManager::CreateFromParams(
     const OptionsDict& options) const {
   const std::string backend =
       options.Get<std::string>(SharedBackendParams::kBackendId);
-  OptionsDict backend_options;
-  backend_options.AddSubdictFromString(
-      options.Get<std::string>(SharedBackendParams::kBackendOptionsId));
+  InlineConfig backend_options;
+  ParseInlineConfig(options.Get<std::string>(SharedBackendParams::kBackendOptionsId), &backend_options);      
   auto r = CreateFromName(backend, options, backend_options);
   backend_options.CheckAllOptionsRead(backend);
   return r;

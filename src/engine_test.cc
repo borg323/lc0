@@ -53,7 +53,7 @@ class EngineTest : public ::testing::Test {
     backend_factory_ = backend_factory.get();
     ON_CALL(*backend_factory_, GetName()).WillByDefault(Return("mock"));
     ON_CALL(*backend_factory_, Create(_, _))
-        .WillByDefault([this](const OptionsDict&, const OptionsDict&) {
+        .WillByDefault([this](const OptionsDict&, const InlineConfig&) {
           auto backend = std::make_unique<MockBackend>();
           backend_ = backend.get();
           return backend;

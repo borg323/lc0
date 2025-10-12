@@ -35,7 +35,7 @@ namespace {
 class RoundRobinBackend : public Backend {
  public:
   RoundRobinBackend(const OptionsDict& options,
-                    const OptionsDict& backend_options) {
+                    const InlineConfig& backend_options) {
     const auto parents = backend_options.ListSubdicts();
     if (parents.empty()) {
       // If options are empty, or multiplexer configured in root object,
@@ -52,7 +52,7 @@ class RoundRobinBackend : public Backend {
   void AddBackend(const std::string& name, const OptionsDict& opts,
                   const OptionsDict& backend_opts) {
     const std::string backend =
-        backend_opts.GetOrDefault<std::string>("backend", name);
+        backend_opts.GetOrValue<std::string>("backend", name);
     backends_.emplace_back(
         BackendManager::Get()->CreateFromName(backend, opts, backend_opts));
 
@@ -82,8 +82,9 @@ class RoundRobinBackend : public Backend {
 class RoundRobinFactory : public BackendFactory {
   int GetPriority() const override { return -999; }
   std::string_view GetName() const override { return "roundrobin"; }
-  std::unique_ptr<Backend> Create(const OptionsDict& options,
-                                  const OptionsDict& backend_options) override {
+  std::unique_ptr<Backend> Create(
+      const OptionsDict& options,
+      const InlineConfig& backend_options) override {
     return std::make_unique<RoundRobinBackend>(options, backend_options);
   }
 };

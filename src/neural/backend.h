@@ -35,6 +35,7 @@
 
 #include "chess/position.h"
 #include "neural/loader.h"
+#include "utils/inline_config.h"
 #include "utils/optionsdict.h"
 
 namespace lczero {
@@ -141,7 +142,7 @@ class BackendFactory {
   virtual int GetPriority() const = 0;
   virtual std::string_view GetName() const = 0;
   virtual std::unique_ptr<Backend> Create(const OptionsDict&,
-                                          const OptionsDict&) = 0;
+                                          const InlineConfig&) = 0;
 };
 
 }  // namespace lczero
