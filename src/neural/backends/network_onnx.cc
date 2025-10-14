@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -217,8 +218,8 @@ class OnnxNetwork final : public Network {
   }
 
   std::string TRTCachePrefix(int batch_size, uint64_t hash);
-  bool IsTRTEngineGood(int batch_size, uint64_t hash, size_t onnx_model_size,
-                       int attempt);
+  bool IsTRTEngineGood(std::filesystem::file_time_type start, int batch_size,
+                       uint64_t hash, size_t onnx_model_size, int attempt);
 
   Ort::Env onnx_env_;
   // Prepare sessions for this many multiples of the batch size;
@@ -739,7 +740,7 @@ std::string OnnxNetwork::TRTCachePrefix(int batch_size, uint64_t hash) {
          "_" + oss.str() + "_";
 }
 
-bool OnnxNetwork::IsTRTEngineGood(int batch_size, uint64_t hash,
+bool OnnxNetwork::IsTRTEngineGood(std::filesystem::file_time_type start, int batch_size, uint64_t hash,
                                   size_t onnx_model_size, int attempt) {
   std::filesystem::path cache_dir =
       CommandLine::BinaryDirectory() + "/trt_cache";
@@ -767,10 +768,14 @@ bool OnnxNetwork::IsTRTEngineGood(int batch_size, uint64_t hash,
     throw Exception("TRT engine cache file not found: " +
                     (cache_dir / prefix).string() + "*.engine");
   }
+  if (latest_matching.last_write_time() < start) {
+    // Reusing an engine. We don't know which one was used if there is more than
+    // one.
+    return true;
+  }
   if (latest_matching.file_size() > onnx_model_size * 4 / 3) {
-    CERR << "TRT engine is bad: " << latest_matching.path()
-         << " size " << latest_matching.file_size() << " vs model size "
-         << onnx_model_size;
+    CERR << "TRT engine is bad: " << latest_matching.path() << " size "
+         << latest_matching.file_size() << " vs model size " << onnx_model_size;
     if (!std::filesystem::remove(latest_matching.path())) {
       throw Exception("Failed to remove slow TRT engine file: " +
                       latest_matching.path().string());
@@ -1016,6 +1021,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
   }
 
   int attempt = 0;
+  std::filesystem::file_time_type start = std::chrono::file_clock::now();
   for (int step = 1; step <= steps_; step++) {
     int max_batch = batch_size_ > 0 ? batch_size_ * step : max_batch_size_;
     int min_batch =
@@ -1028,7 +1034,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
         GetOptions(threads, batch_size_ * step, hash, attempt++));
 
     if (provider == OnnxProvider::TRT && (fp16_ || bf16_)) {
-      if (!IsTRTEngineGood(batch_size_ * step, hash,
+      if (!IsTRTEngineGood(start, batch_size_ * step, hash,
                            file.onnx_model().model().size(), attempt)) {
         if (attempt > 3) {
           throw Exception("TensorRT failed to build a good engine after " +
