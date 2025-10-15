@@ -740,7 +740,8 @@ std::string OnnxNetwork::TRTCachePrefix(int batch_size, uint64_t hash) {
          "_" + oss.str() + "_";
 }
 
-bool OnnxNetwork::IsTRTEngineGood(std::filesystem::file_time_type start, int batch_size, uint64_t hash,
+bool OnnxNetwork::IsTRTEngineGood(std::filesystem::file_time_type start,
+                                  int batch_size, uint64_t hash,
                                   size_t onnx_model_size, int attempt) {
   std::filesystem::path cache_dir =
       CommandLine::BinaryDirectory() + "/trt_cache";
@@ -843,7 +844,7 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       trt_options["trt_layer_norm_fp32_fallback"] = "1";
       trt_options["trt_force_sequential_engine_build"] = "1";
       trt_options["trt_context_memory_sharing_enable"] = "1";
-      trt_options["trt_builder_optimization_level"] = attempt < 2 ? "5" : "4";
+      trt_options["trt_builder_optimization_level"] = attempt < 2 ? "4" : "5";
       // Looks like we need I/O binding to enable this.
 #if CUDART_VERSION
       trt_options["has_user_compute_stream"] = "1";
@@ -963,7 +964,8 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       opts.GetOrDefault<int>("steps", provider == OnnxProvider::DML ? 4 : 1);
   min_batch_size_ = opts.GetOrDefault<int>(
       "min_batch", provider == OnnxProvider::TRT ? 4 : 1);
-  opt_batch_size_ = opts.GetOrDefault<int>("optimize_batch", 256);
+  opt_batch_size_ = opts.GetOrDefault<int>(
+      "optimize_batch", batch_size_ < 0 ? 256 : batch_size_ * steps_);
 
   // Sanity checks.
   if (batch_size_ <= 0) {
@@ -1057,22 +1059,16 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       OnnxComputation<DataType> comp1(this);
       OnnxComputation<DataType> comp2(this);
       InputPlanes planes(kInputPlanes);
-      for (int step = 1; step <= steps_; step++) {
-        int start = batch_size_ > 0 ? batch_size_ * step - batch_size_ : 0;
-        int end = batch_size_ > 0 ? batch_size_ * step : max_batch_size_ / 4;
-        for (int batch_size = start; batch_size < end; batch_size++) {
-          comp1.AddInput(std::move(planes));
-          comp2.AddInput(std::move(planes));
-          // Initialize the session
-          if (batch_size == start) {
-            comp1.ComputeBlockingImpl();
-          }
+      for (int batch_size = 0; batch_size < opt_batch_size_; batch_size++) {
+        comp1.AddInput(std::move(planes));
+        comp2.AddInput(std::move(planes));
+        // Initialize the session
+        comp1.ComputeBlockingImpl();
 
-          if (batch_size >= max_batch_size_ / 4) continue;
+        ReportCUDAErrors(cudaStreamSynchronize(compute_stream_));
 
-          comp1.CaptureCudaGraph();
-          comp2.CaptureCudaGraph();
-        }
+        comp1.CaptureCudaGraph();
+        comp2.CaptureCudaGraph();
       }
     };
     if (fp16_) {
