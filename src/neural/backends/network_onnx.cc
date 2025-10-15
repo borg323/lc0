@@ -102,6 +102,8 @@ struct InputsOutputs {
         ReportCUDAErrors(cudaEventDestroy(inputs_processed_event_));
         ReportCUDAErrors(cudaEventDestroy(evaluation_done_event_));
         ReportCUDAErrors(cudaEventDestroy(outputs_download_event_));
+        ReportCUDAErrors(
+            cudaEventDestroy(outputs_download_before_capture_event_));
         ReportCUDAErrors(cudaFree(input_tensor_upload_device_));
         ReportCUDAErrors(cudaFree(input_tensor_data_device_));
         for (void* ptr : output_tensors_data_device_) {
@@ -133,6 +135,7 @@ struct InputsOutputs {
   cudaEvent_t inputs_processed_event_ = nullptr;
   cudaEvent_t evaluation_done_event_ = nullptr;
   cudaEvent_t outputs_download_event_ = nullptr;
+  cudaEvent_t outputs_download_before_capture_event_ = nullptr;
   cudaStream_t exec_stream_ = nullptr;
   std::vector<cudaGraphExec_t> cuda_graphs_;
 #endif
@@ -147,7 +150,7 @@ class OnnxComputation final : public NetworkComputation {
   int GetBatchSize() const override;
   void ComputeBlocking() override;
   void ComputeBlockingImpl();
-  void CaptureCudaGraph();
+  void CaptureCudaGraph(std::unique_lock<std::mutex>&& lock = std::unique_lock<std::mutex>());
   float GetQVal(int sample) const override;
   float GetDVal(int sample) const override;
   float GetPVal(int sample, int move_id) const override;
@@ -300,6 +303,8 @@ InputsOutputs::InputsOutputs(OnnxNetwork* network)
           cudaEventCreate(&evaluation_done_event_, cudaEventDisableTiming));
       ReportCUDAErrors(
           cudaEventCreate(&outputs_download_event_, cudaEventDisableTiming));
+      ReportCUDAErrors(cudaEventCreate(&outputs_download_before_capture_event_,
+                                       cudaEventDisableTiming));
       ReportCUDAErrors(
           cudaHostAlloc(&input_tensor_data_,
                         max_batch_size * kInputPlanes * sizeof(InputPlane), 0));
@@ -517,12 +522,16 @@ Ort::IoBinding OnnxComputation<DataType>::PrepareInputs(int start,
 }
 
 template <typename DataType>
-void OnnxComputation<DataType>::CaptureCudaGraph() {
+void OnnxComputation<DataType>::CaptureCudaGraph(std::unique_lock<std::mutex>&& lock) {
   cudaGraph_t graph = nullptr;
+
   ReportCUDAErrors(cudaStreamBeginCapture(network_->upload_stream_,
                                           cudaStreamCaptureModeThreadLocal));
   ComputeBlockingImpl();
   ReportCUDAErrors(cudaStreamEndCapture(network_->upload_stream_, &graph));
+  if (lock.owns_lock()) {
+    lock.unlock();
+  }
   ReportCUDAErrors(cudaGraphInstantiateWithFlags(
       &inputs_outputs_->cuda_graphs_[GetBatchSize() - 1], graph,
       cudaGraphInstantiateFlagAutoFreeOnLaunch));
@@ -539,16 +548,29 @@ void OnnxComputation<DataType>::ComputeBlocking() {
        network_->provider_ == OnnxProvider::CUDA) &&
       network_->graphs_enabled_) {
     assert(GetBatchSize() > 0);
+    bool new_capture = false;
     {
       std::unique_lock lock(network_->lock_);
       cudaGraphExec_t& graph =
           inputs_outputs_->cuda_graphs_[GetBatchSize() - 1];
       if (!graph) {
-        CaptureCudaGraph();
+        ComputeBlockingImpl();
+        ReportCUDAErrors(cudaEventRecord(
+            inputs_outputs_->outputs_download_before_capture_event_,
+            network_->download_stream_));
+
+        CaptureCudaGraph(std::move(lock));
+        new_capture = true;
+      } else {
+        ReportCUDAErrors(cudaGraphLaunch(graph, inputs_outputs_->exec_stream_));
       }
-      ReportCUDAErrors(cudaGraphLaunch(graph, inputs_outputs_->exec_stream_));
     }
-    ReportCUDAErrors(cudaStreamSynchronize(inputs_outputs_->exec_stream_));
+    if (new_capture) {
+      ReportCUDAErrors(cudaEventSynchronize(
+          inputs_outputs_->outputs_download_before_capture_event_));
+    } else {
+      ReportCUDAErrors(cudaStreamSynchronize(inputs_outputs_->exec_stream_));
+    }
   } else
 #endif
   {
@@ -672,11 +694,11 @@ void OnnxComputation<DataType>::ComputeBlockingImpl() {
 
       ReportCUDAErrors(cudaEventRecord(inputs_outputs_->inputs_processed_event_,
                                        network_->upload_stream_));
-      if (capture_status == cudaStreamCaptureStatusActive) {
-        ReportCUDAErrors(cudaStreamWaitEvent(network_->compute_stream_,
-                                             network_->compute_ordering_event_,
-                                             cudaEventWaitExternal));
-      }
+      ReportCUDAErrors(cudaStreamWaitEvent(
+          network_->compute_stream_, network_->compute_ordering_event_,
+          capture_status == cudaStreamCaptureStatusActive
+              ? cudaEventWaitExternal
+              : 0));
       options.AddConfigEntry("disable_synchronize_execution_providers", "1");
     } else {
       binding.SynchronizeInputs();
@@ -686,11 +708,11 @@ void OnnxComputation<DataType>::ComputeBlockingImpl() {
 #ifdef CUDART_VERSION
     if (network_->provider_ == OnnxProvider::TRT ||
         network_->provider_ == OnnxProvider::CUDA) {
-      if (capture_status == cudaStreamCaptureStatusActive) {
-        ReportCUDAErrors(cudaEventRecordWithFlags(
-            network_->compute_ordering_event_, network_->compute_stream_,
-            cudaEventRecordExternal));
-      }
+      ReportCUDAErrors(cudaEventRecordWithFlags(
+          network_->compute_ordering_event_, network_->compute_stream_,
+          capture_status == cudaStreamCaptureStatusActive
+              ? cudaEventRecordExternal
+              : 0));
       for (size_t j = 0; j < inputs_outputs_->output_tensors_step_.size();
            j++) {
         ReportCUDAErrors(
@@ -1062,7 +1084,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       for (int batch_size = 0; batch_size < opt_batch_size_; batch_size++) {
         comp1.AddInput(std::move(planes));
         comp2.AddInput(std::move(planes));
-        // Initialize the session
+        // Initialize the session and TensorRT context state.
         comp1.ComputeBlockingImpl();
 
         ReportCUDAErrors(cudaStreamSynchronize(compute_stream_));
