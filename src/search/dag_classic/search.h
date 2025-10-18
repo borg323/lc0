@@ -48,6 +48,10 @@
 #include "utils/logging.h"
 #include "utils/mutex.h"
 
+#if __GNUC__ && !__clang__
+#pragma GCC diagnostic ignored "-Winterference-size"
+#endif
+
 #if __cpp_lib_atomic_wait < 201907L
 #include <condition_variable>
 #define NO_STD_ATOMIC_WAIT 1
@@ -401,6 +405,12 @@ struct CurrentPath {
     uint32_t visit_child_ : 1;   // bool
     uint32_t stop_picking_ : 1;  // bool
     uint32_t index_ : 8;         // < 218
+    Bits(unsigned visits, bool last, bool visit, bool stop, unsigned index)
+        : visits_(visits),
+          last_child_(last),
+          visit_child_(visit),
+          stop_picking_(stop),
+          index_(index) {}
   };
   union {
     Bits bits_;

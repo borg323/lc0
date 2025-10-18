@@ -281,7 +281,6 @@ struct TaskArray {
   int size_;
   int capacity_;
 };
-;
 
 // Unpack task_count_ atomic which holds both task_count_ and tasks_taken_. It
 // can unpack a value from an already read value or load it from the atomic
@@ -317,7 +316,7 @@ std::tuple<int, int, int> ReadTaskCount(T& task_count) {
 // a little random false sharing when a writer happens to target the same cache
 // line as a reader.
 template <typename TasksArray>
-TasksArray::value_type& PickingTaskIndex(TasksArray& tasks, unsigned index) {
+typename TasksArray::value_type& PickingTaskIndex(TasksArray& tasks, unsigned index) {
   const unsigned number_of_cache_lines = sizeof(tasks) / kCacheLineSize;
   const unsigned buckets_per_cache_line = tasks.size() / number_of_cache_lines;
   unsigned cache_line = index % number_of_cache_lines;
@@ -1846,9 +1845,9 @@ void SearchWorker::ExecuteOneIteration() {
 // 1. Initialize internal structures.
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 void SearchWorker::InitializeIteration() {
+  cancel_task_.Wait(tid_);
   // Free the old computation before allocating a new one. This works better
   // when backend caches buffer allocations between computations.
-  cancel_task_.Wait(tid_);
   computation_.reset();
   computation_ = search_->backend_->CreateComputation();
   state_.minibatch_.clear();
@@ -2440,6 +2439,7 @@ SearchWorker::PickNodesToExtendTask(int collision_limit, int tid,
 
         if (task_count > 0) {
           PickTaskGather::Initializer gather_init(full_path, history);
+          Node* node = node;
 
           end = std::copy_if(
               visits_to_perform.begin() + 1, end, visits_to_perform.begin() + 1,
@@ -3065,7 +3065,7 @@ void SearchWorker::UpdateCounters() {
 #else
     Mutex::Lock lock(search_->fallback_threads_mutex_);
     search_->fallback_threads_cond_.wait(
-        lock.get_raw(), [this]() { return tc != search_->thread_count_; });
+        lock.get_raw(), [this, tc]() { return tc != search_->thread_count_; });
 #endif
   }
 }
