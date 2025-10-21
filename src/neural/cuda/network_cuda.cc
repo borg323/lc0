@@ -1059,7 +1059,7 @@ class CudaNetwork : public Network {
     CERR << "GPU: " << deviceProp.name;
     CERR << "GPU memory: " << deviceProp.totalGlobalMem / std::pow(2.0f, 30)
          << " Gb";
-    CERR << "GPU clock frequency: " << deviceProp.clockRate / 1e3f << " MHz";
+    // CERR << "GPU clock frequency: " << deviceProp.clockRate / 1e3f << " MHz";
     CERR << "GPU compute capability: " << deviceProp.major << "."
          << deviceProp.minor;
     CERR << "L2 cache capacity: " << deviceProp.l2CacheSize;
