@@ -89,7 +89,7 @@ install:
 - cmd: IF DEFINED CUDA_INSTALL IF %NAME%==gpu-nvidia-cuda12 appveyor DownloadFile https://developer.download.nvidia.com/compute/cuda/12.9.0/network_installers/cuda_12.9.0_windows_network.exe
 - cmd: IF DEFINED CUDA_INSTALL IF %NAME%==gpu-nvidia-cuda12 cuda_12.9.0_windows_network.exe -s nvcc_12.9 cublas_dev_12.9 cublas_12.9 curand_dev_12.9 cudart_12.9 documentation_12.9
 - cmd: IF DEFINED CUDA_INSTALL IF %NAME%==onnx appveyor DownloadFile https://developer.download.nvidia.com/compute/cuda/12.9.0/network_installers/cuda_12.9.0_windows_network.exe
-- cmd: IF DEFINED CUDA_INSTALL IF %NAME%==onnx cuda_12.9.0_windows_network.exe -s nvcc_12.9 cublas_dev_12.9 cublas_12.9 cudart_12.9 documentation_12.9
+- cmd: IF DEFINED CUDA_INSTALL IF %NAME%==onnx cuda_12.9.0_windows_network.exe -s nvcc_12.9 cublas_dev_12.9 cublas_12.9 curand_dev_12.9 cudart_12.9 documentation_12.9
 - cmd: IF %NAME%==gpu-nvidia-cuda12 IF NOT EXIST C:\cache\cutlass-2.11.0 appveyor DownloadFile https://github.com/NVIDIA/cutlass/archive/refs/tags/v2.11.0.zip
 - cmd: IF %NAME%==gpu-nvidia-cuda12 IF NOT EXIST C:\cache\cutlass-2.11.0 7z x v2.11.0.zip -oC:\cache\
 - cmd: IF %CUDA%==true set PATH=%CUDA_PATH%\bin;%PATH%
