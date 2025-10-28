@@ -48,7 +48,7 @@ install:
 - cmd: IF %NAME%==onednn set ONEDNN=true
 - cmd: IF %NAME%==onnx set ONNX=true
 - cmd: IF %NAME%==onnx set CUDA=true
-- cmd: IF %NAME%==onnx set GTEST=true
+#- cmd: IF %NAME%==onnx set GTEST=true
 - cmd: set NET=753723
 - cmd: set NET_HASH=3e3444370b9fe413244fdc79671a490e19b93d3cca1669710ffeac890493d198
 - cmd: IF NOT %OPENCL%==true IF NOT %DX%==true set NET=791556
