@@ -2399,12 +2399,12 @@ void ValueHead<DataType>::Eval(int N, DataType* output, const DataType* input,
                              num_outputs, act_, stream);
   }
 
-  {
+  if (!wdl_err_) {
     // Value dense 2
     const int num_inputs = value_hidden_size_;
     const int num_outputs = wdl_ ? 3 : 1;
     const int batch = N;
-    DataType* layer_out = wdl_err_ ? (DataType*)buffer : (DataType*)output;
+    DataType* layer_out = (DataType*)output;
     cublasXgemm<DataType>(cublas, CUBLAS_OP_T, CUBLAS_OP_N, num_outputs, batch,
                           num_inputs, 1.0f, (const DataType*)ip2_val_w_,
                           num_inputs, (DataType*)scratch, num_inputs, 0.0f,
@@ -2412,9 +2412,7 @@ void ValueHead<DataType>::Eval(int N, DataType* output, const DataType* input,
     addVectors(layer_out, layer_out, ip2_val_b_, num_outputs * batch,
                num_outputs * batch, num_outputs,
                wdl_ ? ACTIVATION_NONE : ACTIVATION_TANH, stream);
-  }
-
-  if (wdl_err_) {
+  } else {
     // Value error dense
     const int num_inputs = value_hidden_size_;
     const int num_outputs = 1;
