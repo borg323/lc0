@@ -188,42 +188,13 @@ bool IsTasksCompleted(const std::atomic<int>& task_count,
 
 }  // namespace
 
-
-/*
-const OptionId SearchParams::kUseUncertaintyWeightingId{
-    {.long_flag = "use-uncertainty-weighting",
-     .uci_option = "UseUncertaintyWeighting",
-     .help_text = "Enable uncertainty weighting in MCTS.",
-     .visibility = OptionId::kAlwaysVisible}};
-const OptionId SearchParams::kUncertaintyWeightingCapId{
-    {.long_flag = "uncertainty-weighting-cap",
-     .uci_option = "UncertaintyWeightingCap",
-     .help_text = "Cap for node weight from uncertainty weighting.",
-     .visibility = OptionId::kAlwaysVisible}};
-const OptionId SearchParams::kUncertaintyWeightingCoefficientId{
-    {.long_flag = "uncertainty-weighting-coefficient",
-     .uci_option = "UncertaintyWeightingCoefficient",
-     .help_text = "Coefficient in the uncertainty weighting formula.",
-     .visibility = OptionId::kAlwaysVisible}};
-const OptionId SearchParams::kUncertaintyWeightingExponentId{
-    {.long_flag = "uncertainty-weighting-exponent",
-     .uci_option = "UncertaintyWeightingExponent",
-     .help_text = "Exponent in the uncertainty weighting formula.",
-     .visibility = OptionId::kAlwaysVisible}};
-*/
-
-
 Search::Search(const NodeTree& tree, Backend* backend,
                std::unique_ptr<UciResponder> uci_responder,
                const MoveList& searchmoves,
                std::chrono::steady_clock::time_point start_time,
                std::unique_ptr<classic::SearchStopper> stopper, bool infinite,
                bool ponder, const OptionsDict& options, TranspositionTable* tt,
-               SyzygyTablebase* syzygy_tb, bool use_uncertainty_weighting,
-               float uncertainty_weighting_cap,
-               float uncertainty_weighting_coefficient,
-               float uncertainty_weighting_exponent
-  )
+               SyzygyTablebase* syzygy_tb)
     : ok_to_respond_bestmove_(!infinite && !ponder),
       stopper_(std::move(stopper)),
       root_node_(tree.GetCurrentHead()),
@@ -240,12 +211,12 @@ Search::Search(const NodeTree& tree, Backend* backend,
           searchmoves_, syzygy_tb_, played_history_,
           params_.GetSyzygyFastPlay(), &tb_hits_, &root_is_in_dtz_)),
       uci_responder_(std::move(uci_responder)),
-      use_uncertainty_weighting_(use_uncertainty_weighting),
-      uncertainty_weighting_cap_(uncertainty_weighting_cap),
-      uncertainty_weighting_coefficient_(uncertainty_weighting_coefficient),
-      uncertainty_weighting_exponent_(uncertainty_weighting_exponent)
-
-{
+      use_uncertainty_weighting_(params_.GetUseUncertaintyWeighting()),
+      uncertainty_weighting_cap_(params_.GetUncertaintyWeightingCap()),
+      uncertainty_weighting_coefficient_(
+          params_.GetUncertaintyWeightingCoefficient()),
+      uncertainty_weighting_exponent_(
+          params_.GetUncertaintyWeightingExponents()) {
   // Evict expired entries from the transposition table.
   // Garbage collection may lead to expiration at any time so this is not
   // enough to prevent expired entries later during the search.
@@ -2311,24 +2282,20 @@ void SearchWorker::DoBackupUpdateSingleNode(
   float m_delta = 0.0f;
 
   float avg_weight;
-  // float avg_weight;
   if (nl) {
     float e = nl->GetE();
     n->SetE(e);
-    if (true || search_->use_uncertainty_weighting_) {
+    if (search_->use_uncertainty_weighting_) {
       const float cap = search_->uncertainty_weighting_cap_;
       const float coefficient = search_->uncertainty_weighting_coefficient_;
       const float exponent = search_->uncertainty_weighting_exponent_;
-      avg_weight = fmin(1.03, 0.13 * pow(e, -1.76));
-      //avg_weight = fmin(cap, coefficient * pow(e, exponent));
+      avg_weight = fmin(cap, coefficient * pow(e, exponent));
     } else
       avg_weight = 1;
-
   } else {
     n->SetE(-1.0f);
     avg_weight = 1;
   }
-
   
   // Update the low node at the start of the backup path first, but only visit
   // it the first time that backup sees it.

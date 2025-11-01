@@ -60,10 +60,7 @@ class Search {
          std::chrono::steady_clock::time_point start_time,
          std::unique_ptr<classic::SearchStopper> stopper, bool infinite,
          bool ponder, const OptionsDict& options, TranspositionTable* tt,
-         SyzygyTablebase* syzygy_tb, bool use_uncertainty_weighting,
-         float uncertainty_weighting_cap,
-         float uncertainty_weighting_coefficient,
-         float uncertainty_weighting_exponent);
+         SyzygyTablebase* syzygy_tb);
 
   ~Search();
 

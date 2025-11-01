@@ -33,7 +33,35 @@ namespace lczero {
 namespace dag_classic {
 
 using ContemptMode = classic::ContemptMode;
-using SearchParams = classic::BaseSearchParams;
+
+class SearchParams : public classic::BaseSearchParams {
+ public:
+  SearchParams(const OptionsDict& options);
+  SearchParams(const SearchParams&) = delete;
+
+  // Populates UciOptions with search parameters.
+  static void Populate(OptionsParser* options);
+
+  // Parameter getters.
+  bool GetUseUncertaintyWeighting() const {
+    return options_.Get<bool>(kUseUncertaintyWeightingId);
+  }
+  float GetUncertaintyWeightingCap() const {
+    return options_.Get<float>(kUncertaintyWeightingCapId);
+  }
+  float GetUncertaintyWeightingCoefficient() const {
+    return options_.Get<float>(kUncertaintyWeightingCoefficientId);
+  }
+  int GetUncertaintyWeightingExponents() const {
+    return options_.Get<float>(kUncertaintyWeightingExponentId);
+  }
+
+  // Search parameter IDs.
+  static const OptionId kUseUncertaintyWeightingId;
+  static const OptionId kUncertaintyWeightingCapId;
+  static const OptionId kUncertaintyWeightingCoefficientId;
+  static const OptionId kUncertaintyWeightingExponentId;
+};
 
 }  // namespace dag_classic
 }  // namespace lczero
