@@ -60,7 +60,10 @@ class Search {
          std::chrono::steady_clock::time_point start_time,
          std::unique_ptr<classic::SearchStopper> stopper, bool infinite,
          bool ponder, const OptionsDict& options, TranspositionTable* tt,
-         SyzygyTablebase* syzygy_tb);
+         SyzygyTablebase* syzygy_tb, bool use_uncertainty_weighting,
+         float uncertainty_weighting_cap,
+         float uncertainty_weighting_coefficient,
+         float uncertainty_weighting_exponent);
 
   ~Search();
 
@@ -208,6 +211,11 @@ class Search {
   std::unique_ptr<UciResponder> uci_responder_;
   ContemptMode contempt_mode_;
   friend class SearchWorker;
+
+  const bool use_uncertainty_weighting_;
+  const float uncertainty_weighting_cap_;
+  const float uncertainty_weighting_coefficient_;
+  const float uncertainty_weighting_exponent_;
 };
 
 // Single thread worker of the search engine.
@@ -448,12 +456,12 @@ class SearchWorker {
   bool MaybeAdjustForTerminalOrTransposition(Node* n,
                                              const std::shared_ptr<LowNode>& nl,
                                              float& v, float& d, float& m,
-                                             uint32_t& n_to_fix, float& v_delta,
+                                             uint32_t& n_to_fix, float& weight_to_fix, float& v_delta,
                                              float& d_delta, float& m_delta,
                                              bool& update_parent_bounds) const;
   void DoBackupUpdateSingleNode(const NodeToProcess& node_to_process);
   // Returns whether a node's bounds were set based on its children.
-  bool MaybeSetBounds(Node* p, float m, uint32_t* n_to_fix, float* v_delta,
+  bool MaybeSetBounds(Node* p, float m, uint32_t* n_to_fix, float* weight_to_fix, float* v_delta,
                       float* d_delta, float* m_delta) const;
   void PickNodesToExtend(int collision_limit);
   void PickNodesToExtendTask(const BackupPath& path, int collision_limit,

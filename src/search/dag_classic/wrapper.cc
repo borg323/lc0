@@ -49,6 +49,29 @@ const OptionId kClearTree{
      .help_text = "Clear the tree before the next search.",
      .visibility = OptionId::kProOnly}};
 
+// Uncertainty weighting params
+const OptionId kUseUncertaintyWeightingId{
+    {.long_flag = "use-uncertainty-weighting",
+     .uci_option = "UseUncertaintyWeighting",
+     .help_text = "Enable uncertainty weighting in MCTS.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId kUncertaintyWeightingCapId{
+    {.long_flag = "uncertainty-weighting-cap",
+     .uci_option = "UncertaintyWeightingCap",
+     .help_text = "Cap for node weight from uncertainty weighting.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId kUncertaintyWeightingCoefficientId{
+    {.long_flag = "uncertainty-weighting-coefficient",
+     .uci_option = "UncertaintyWeightingCoefficient",
+     .help_text = "Coefficient in the uncertainty weighting formula.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId kUncertaintyWeightingExponentId{
+    {.long_flag = "uncertainty-weighting-exponent",
+     .uci_option = "UncertaintyWeightingExponent",
+     .help_text = "Exponent in the uncertainty weighting formula.",
+     .visibility = OptionId::kAlwaysVisible}};
+
+
 class DagClassicSearch : public SearchBase {
  public:
   DagClassicSearch(UciResponder* responder, const OptionsDict* options)
@@ -142,7 +165,9 @@ void DagClassicSearch::StartSearch(const GoParams& params) {
       *tree_, backend_, std::move(forwarder),
       StringsToMovelist(params.searchmoves, tree_->HeadPosition().GetBoard()),
       *move_start_time_, std::move(stopper), params.infinite, params.ponder,
-      *options_, &tt_, syzygy_tb_);
+      *options_, &tt_, syzygy_tb_, options_->Get<bool>(kUseUncertaintyWeightingId),
+    options_->Get<float>(kUncertaintyWeightingCapId), options_->Get<float>(kUncertaintyWeightingCoefficientId),
+      options_->Get<float>(kUncertaintyWeightingExponentId));
 
   LOGFILE << "Timer started at "
           << FormatTime(SteadyClockToSystemClock(*move_start_time_));
@@ -162,6 +187,14 @@ class DagClassicSearchFactory : public SearchFactory {
     classic::PopulateTimeManagementOptions(classic::RunType::kUci, parser);
 
     parser->Add<ButtonOption>(kClearTree);
+    
+    parser->Add<BoolOption>(kUseUncertaintyWeightingId) =
+        false;
+    parser->Add<FloatOption>(kUncertaintyWeightingCapId, 0.0f, 10.0f) = 1.0f;
+    parser->Add<FloatOption>(kUncertaintyWeightingCoefficientId, 0.0f, 10.0f) =
+        0.13f;
+    parser->Add<FloatOption>(kUncertaintyWeightingExponentId, -10.0f, 0.0f) =
+        -1.76f;
   }
 };
 

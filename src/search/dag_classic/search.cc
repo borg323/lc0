@@ -188,13 +188,42 @@ bool IsTasksCompleted(const std::atomic<int>& task_count,
 
 }  // namespace
 
+
+/*
+const OptionId SearchParams::kUseUncertaintyWeightingId{
+    {.long_flag = "use-uncertainty-weighting",
+     .uci_option = "UseUncertaintyWeighting",
+     .help_text = "Enable uncertainty weighting in MCTS.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId SearchParams::kUncertaintyWeightingCapId{
+    {.long_flag = "uncertainty-weighting-cap",
+     .uci_option = "UncertaintyWeightingCap",
+     .help_text = "Cap for node weight from uncertainty weighting.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId SearchParams::kUncertaintyWeightingCoefficientId{
+    {.long_flag = "uncertainty-weighting-coefficient",
+     .uci_option = "UncertaintyWeightingCoefficient",
+     .help_text = "Coefficient in the uncertainty weighting formula.",
+     .visibility = OptionId::kAlwaysVisible}};
+const OptionId SearchParams::kUncertaintyWeightingExponentId{
+    {.long_flag = "uncertainty-weighting-exponent",
+     .uci_option = "UncertaintyWeightingExponent",
+     .help_text = "Exponent in the uncertainty weighting formula.",
+     .visibility = OptionId::kAlwaysVisible}};
+*/
+
+
 Search::Search(const NodeTree& tree, Backend* backend,
                std::unique_ptr<UciResponder> uci_responder,
                const MoveList& searchmoves,
                std::chrono::steady_clock::time_point start_time,
                std::unique_ptr<classic::SearchStopper> stopper, bool infinite,
                bool ponder, const OptionsDict& options, TranspositionTable* tt,
-               SyzygyTablebase* syzygy_tb)
+               SyzygyTablebase* syzygy_tb, bool use_uncertainty_weighting,
+               float uncertainty_weighting_cap,
+               float uncertainty_weighting_coefficient,
+               float uncertainty_weighting_exponent
+  )
     : ok_to_respond_bestmove_(!infinite && !ponder),
       stopper_(std::move(stopper)),
       root_node_(tree.GetCurrentHead()),
@@ -210,7 +239,13 @@ Search::Search(const NodeTree& tree, Backend* backend,
       root_move_filter_(MakeRootMoveFilter(
           searchmoves_, syzygy_tb_, played_history_,
           params_.GetSyzygyFastPlay(), &tb_hits_, &root_is_in_dtz_)),
-      uci_responder_(std::move(uci_responder)) {
+      uci_responder_(std::move(uci_responder)),
+      use_uncertainty_weighting_(use_uncertainty_weighting),
+      uncertainty_weighting_cap_(uncertainty_weighting_cap),
+      uncertainty_weighting_coefficient_(uncertainty_weighting_coefficient),
+      uncertainty_weighting_exponent_(uncertainty_weighting_exponent)
+
+{
   // Evict expired entries from the transposition table.
   // Garbage collection may lead to expiration at any time so this is not
   // enough to prevent expired entries later during the search.
@@ -557,6 +592,8 @@ std::vector<std::string> Search::GetVerboseStats(
               ? 0
               : params_.GetWDLRescaleDiff() * params_.GetWDLEvalObjectivity(),
           is_perspective, true, params_.GetWDLMaxS());
+      print(oss, "(WGT: ", n->GetWeight(), ") ", 11, 3);
+      print(oss, "(E: ", n->GetE(), ") ", 6, 5);
       print(oss, "(WL: ", wl, ") ", 8, 5);
       print(oss, "(D: ", d, ") ", 5, 3);
       print(oss, "(M: ", n->GetM(), ") ", 4, 1);
@@ -2175,7 +2212,7 @@ void SearchWorker::DoBackupUpdate() {
 
 bool SearchWorker::MaybeAdjustForTerminalOrTransposition(
     Node* n, const std::shared_ptr<LowNode>& nl, float& v, float& d, float& m,
-    uint32_t& n_to_fix, float& v_delta, float& d_delta, float& m_delta,
+    uint32_t& n_to_fix, float& weight_to_fix, float& v_delta, float& d_delta, float& m_delta,
     bool& update_parent_bounds) const {
   if (n->IsTerminal()) {
     v = n->GetWL();
@@ -2186,7 +2223,7 @@ bool SearchWorker::MaybeAdjustForTerminalOrTransposition(
   }
 
   // Use information from transposition or a new terminal.
-  if (nl->IsTransposition() || nl->IsTerminal() || n->GetN() < nl->GetN()) {
+  if (nl->IsTransposition() || nl->IsTerminal() || n->GetWeight() < nl->GetWeight()) {
     // Adapt information from low node to node by flipping Q sign, bounds,
     // result and incrementing m.
     v = -nl->GetWL();
@@ -2195,6 +2232,7 @@ bool SearchWorker::MaybeAdjustForTerminalOrTransposition(
     // When starting at or going through a transposition/terminal, make sure to
     // use the information it has already acquired.
     n_to_fix = n->GetN();
+    weight_to_fix = n->GetWeight();
     v_delta = v - n->GetWL();
     d_delta = d - n->GetD();
     m_delta = m - n->GetM();
@@ -2266,15 +2304,37 @@ void SearchWorker::DoBackupUpdateSingleNode(
   float d = 0.0f;
   float m = 0.0f;
   uint32_t n_to_fix = 0;
+  float weight_to_fix = 0.0f;
   float v_delta = 0.0f;
   float d_delta = 0.0f;
   float m_delta = 0.0f;
 
+  float avg_weight;
+  // float avg_weight;
+  if (nl) {
+    float e = nl->GetE();
+    n->SetE(e);
+    if (true || search_->use_uncertainty_weighting_) {
+      const float cap = search_->uncertainty_weighting_cap_;
+      const float coefficient = search_->uncertainty_weighting_coefficient_;
+      const float exponent = search_->uncertainty_weighting_exponent_;
+      avg_weight = fmin(1.03, 0.13 * pow(e, -1.76));
+      //avg_weight = fmin(cap, coefficient * pow(e, exponent));
+    } else
+      avg_weight = 1;
+
+  } else {
+    n->SetE(-1.0f);
+    avg_weight = 1;
+  }
+
+  
   // Update the low node at the start of the backup path first, but only visit
   // it the first time that backup sees it.
   if (nl && nl->GetN() == 0) {
     nl->FinalizeScoreUpdate(nl->GetWL(), nl->GetD(), nl->GetM(),
-                            node_to_process.multivisit);
+                            node_to_process.multivisit,
+                            node_to_process.multivisit * avg_weight);
   }
 
   if (nr >= 2) {
@@ -2284,7 +2344,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
     v = 0.0f;
     d = 1.0f;
     m = 1;
-  } else if (!MaybeAdjustForTerminalOrTransposition(n, nl, v, d, m, n_to_fix,
+  } else if (!MaybeAdjustForTerminalOrTransposition(n, nl, v, d, m, n_to_fix, weight_to_fix,
                                                     v_delta, d_delta, m_delta,
                                                     update_parent_bounds)) {
     // If there is nothing better, use original NN values adjusted for node.
@@ -2296,9 +2356,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
   // Backup V value up to a root. After 1 visit, V = Q.
   for (auto it = path.crbegin(); it != path.crend();
        /* ++it in the body */) {
-    n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
+    n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit,
+                           node_to_process.multivisit * avg_weight);
     if (n_to_fix > 0 && !n->IsTerminal()) {
-      n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
+      n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix, weight_to_fix);
     }
 
     // Stop delta update on repetition "terminal" and propagate a draw above
@@ -2310,7 +2371,10 @@ void SearchWorker::DoBackupUpdateSingleNode(
       d = 1.0f;
       m = nm + 1;
     }
-    if (n->IsRepetition()) n_to_fix = 0;
+    if (n->IsRepetition()) {
+      n_to_fix = 0;
+      weight_to_fix = 0.0f;
+    }
 
     // Nothing left to do without ancestors to update.
     if (++it == path.crend()) break;
@@ -2327,24 +2391,26 @@ void SearchWorker::DoBackupUpdateSingleNode(
       d = pl->GetD();
       m = pl->GetM();
       n_to_fix = 0;
+      weight_to_fix = 0.0f;
     }
-    pl->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
+    pl->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit,
+                            node_to_process.multivisit * avg_weight);
     if (n_to_fix > 0) {
-      pl->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
+      pl->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix, weight_to_fix);
     }
 
     bool old_update_parent_bounds = update_parent_bounds;
     // Try setting parent bounds except the root or those already terminal.
     update_parent_bounds =
         update_parent_bounds && p != search_->root_node_ && !pl->IsTerminal() &&
-        MaybeSetBounds(p, m, &n_to_fix, &v_delta, &d_delta, &m_delta);
+        MaybeSetBounds(p, m, &n_to_fix, &weight_to_fix, &v_delta, &d_delta, &m_delta);
 
     // Q will be flipped for opponent.
     v = -v;
     v_delta = -v_delta;
     m++;
 
-    MaybeAdjustForTerminalOrTransposition(p, pl, v, d, m, n_to_fix, v_delta,
+    MaybeAdjustForTerminalOrTransposition(p, pl, v, d, m, n_to_fix, weight_to_fix, v_delta,
                                           d_delta, m_delta,
                                           update_parent_bounds);
 
@@ -2376,6 +2442,7 @@ void SearchWorker::DoBackupUpdateSingleNode(
 }
 
 bool SearchWorker::MaybeSetBounds(Node* p, float m, uint32_t* n_to_fix,
+                                  float* weight_to_fix,
                                   float* v_delta, float* d_delta,
                                   float* m_delta) const {
   auto losing_m = 0.0f;
@@ -2424,7 +2491,9 @@ bool SearchWorker::MaybeSetBounds(Node* p, float m, uint32_t* n_to_fix,
     // Search can stop at the parent if the bounds can't change anymore, so make
     // it terminal preferring shorter wins and longer losses.
     *n_to_fix = p->GetN();
+    *weight_to_fix = p->GetWeight();
     assert(*n_to_fix > 0);
+    assert(*weight_to_fix > 0); 
     pl->MakeTerminal(
         upper, (upper == GameResult::BLACK_WON ? std::max(losing_m, m) : m),
         prefer_tb ? Terminal::Tablebase : Terminal::EndOfGame);
