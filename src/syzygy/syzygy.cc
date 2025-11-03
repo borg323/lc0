@@ -194,7 +194,7 @@ int count_pieces(const ChessBoard& pos, int type, bool theirs) {
     case BISHOP:
       return (all & pos.bishops()).count_few();
     case KNIGHT:
-      return (theirs ? pos.their_knights() : pos.our_knights()).count_few();
+      return (all & pos.knights()).count_few();
     case PAWN:
       return (all & pos.pawns()).count_few();
     default:
@@ -207,7 +207,7 @@ BitBoard pieces(const ChessBoard& pos, int type, bool theirs) {
   const BitBoard all = theirs ? pos.theirs() : pos.ours();
   switch (type) {
     case KING:
-      return theirs ? pos.their_king() : pos.our_king();
+      return all & pos.kings();
     case QUEEN:
       return all & pos.queens();
     case ROOK:
@@ -215,7 +215,7 @@ BitBoard pieces(const ChessBoard& pos, int type, bool theirs) {
     case BISHOP:
       return all & pos.bishops();
     case KNIGHT:
-      return theirs ? pos.their_knights() : pos.our_knights();
+      return all & pos.knights();
     case PAWN:
       return all & pos.pawns();
     default:
@@ -989,7 +989,7 @@ class SyzygyTablebaseImpl {
     }
 
   finished:
-    CERR << "Found " << num_wdl_ << "WDL, " << num_dtm_ << " DTM and "
+    CERR << "Found " << num_wdl_ << " WDL, " << num_dtm_ << " DTM and "
          << num_dtz_ << " DTZ tablebase files.";
   }
 
@@ -1047,10 +1047,14 @@ class SyzygyTablebaseImpl {
     }
     *mapping = statbuf.st_size;
     base_address = mmap(nullptr, statbuf.st_size, PROT_READ, MAP_SHARED, fd, 0);
+#if defined(MADV_RANDOM)
+    // For context: <https://github.com/official-stockfish/Stockfish/pull/1829>
+    // and <https://github.com/official-stockfish/Stockfish/pull/3094>.
+    madvise(base_address, statbuf.st_size, MADV_RANDOM);
+#endif
     ::close(fd);
     if (base_address == MAP_FAILED) {
-      CERR << "Could not mmap() " << fname;
-      exit(1);
+      throw Exception("Could not mmap() " + fname);
     }
 #else
     const HANDLE fd =
@@ -1066,15 +1070,12 @@ class SyzygyTablebaseImpl {
                                     size_low, nullptr);
     CloseHandle(fd);
     if (!mmap) {
-      CERR << "CreateFileMapping() failed";
-      exit(1);
+      throw Exception("CreateFileMapping() failed");
     }
     *mapping = mmap;
     base_address = MapViewOfFile(mmap, FILE_MAP_READ, 0, 0, 0);
     if (!base_address) {
-      CERR << "MapViewOfFile() failed, name = " << fname
-           << ", error = " << GetLastError();
-      exit(1);
+      throw Exception("MapViewOfFile() failed, name = " + fname + ", error = " + std::to_string(GetLastError()));
     }
 #endif
     return base_address;
@@ -1321,8 +1322,7 @@ class SyzygyTablebaseImpl {
     const Key key = calc_key_from_position(pos);
 
     // Test for KvK
-    if (type == WDL && pos.ours() == pos.our_king() &&
-        pos.theirs() == pos.their_king()) {
+    if (type == WDL && (pos.ours() | pos.theirs()) == pos.kings()) {
       return 0;
     }
 
@@ -1599,7 +1599,7 @@ int SyzygyTablebase::probe_dtz(const Position& pos, ProbeState* result) {
   int min_DTZ = 0xFFFF;
   for (const Move& move : pos.GetBoard().GenerateLegalMoves()) {
     Position next_pos = Position(pos, move);
-    const bool zeroing = next_pos.GetNoCaptureNoPawnPly() == 0;
+    const bool zeroing = next_pos.GetRule50Ply() == 0;
     // For zeroing moves we want the dtz of the move _before_ doing it,
     // otherwise we will get the dtz of the next move sequence. Search the
     // position after the move to get the score sign (because even in a winning
@@ -1626,22 +1626,22 @@ int SyzygyTablebase::probe_dtz(const Position& pos, ProbeState* result) {
 //
 // A return value false indicates that not all probes were successful.
 bool SyzygyTablebase::root_probe(const Position& pos, bool has_repeated,
-                                 std::vector<Move>* safe_moves) {
+                                 bool win_only, std::vector<Move>* safe_moves) {
   ProbeState result;
   auto root_moves = pos.GetBoard().GenerateLegalMoves();
   // Obtain 50-move counter for the root position
-  const int cnt50 = pos.GetNoCaptureNoPawnPly();
+  const int cnt50 = pos.GetRule50Ply();
   // Check whether a position was repeated since the last zeroing move.
   const bool rep = has_repeated;
   int dtz;
   std::vector<int> ranks;
   ranks.reserve(root_moves.size());
-  int best_rank = -1000;
+  int best_rank = (win_only ? 1 : -1000);
   // Probe and rank each move
   for (auto& m : root_moves) {
     Position next_pos = Position(pos, m);
     // Calculate dtz for the current move counting from the root position
-    if (next_pos.GetNoCaptureNoPawnPly() == 0) {
+    if (next_pos.GetRule50Ply() == 0) {
       // In case of a zeroing move, dtz is one of -101/-1/0/1/101
       const WDLScore wdl = static_cast<WDLScore>(-probe_wdl(next_pos, &result));
       dtz = dtz_before_zeroing(wdl);

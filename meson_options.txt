@@ -1,32 +1,12 @@
-option('tensorflow_include', 
-       type: 'array',
-       value: ['/usr/local/include/tensorflow/'],
-       description: 'Paths to tensorflow include directories')
-
-option('protobuf_include',
-       type: 'array',
-       value: ['/usr/local/include/'],
-       description: 'Paths to protobuf include directories')
-
 option('openblas_include',
        type: 'array',
        value: ['/usr/include/openblas/'],
        description: 'Paths to openblas include directories')
 
 option('opencl_include',
-       type: 'array',
-       value: ['/usr/include/'],
-       description: 'Paths to OpenCL include directories')
-
-option('tensorflow_libdir',
-       type: 'array',
-       value: ['/usr/local/lib/tensorflow_cc/'],
-       description: 'Paths to tensorflow libraries')
-
-option('protobuf_libdir',
-       type: 'array',
-       value: ['/usr/lib/x86_64-linux-gnu/'],
-       description: 'Paths to protobuf libraries')
+       type: 'string',
+       value: '/usr/include/',
+       description: 'Path to OpenCL include directory')
 
 option('openblas_libdirs',
        type: 'array',
@@ -40,7 +20,7 @@ option('opencl_libdirs',
 
 option('cudnn_libdirs',
        type: 'array',
-       value: ['/opt/cuda/lib64/', '/usr/local/cuda/lib64/'],
+       value: ['/opt/cuda/lib64/', '/usr/local/cuda/lib64/', '/usr/lib/cuda/lib64/'],
        description: 'Paths to Cuda/cudnn libraries')
 
 option('mkl_libdirs',
@@ -53,9 +33,14 @@ option('mkl_include',
        value: ['/opt/intel/mkl/include'],
        description: 'Paths to MKL libraries')
 
-option('cudnn_include', 
+option('dnnl_dir',
+       type: 'string',
+       value: '/usr',
+       description: 'Paths to DNNL install directory')
+
+option('cudnn_include',
        type: 'array',
-       value: ['/opt/cuda/include/', '/usr/local/cuda/include/'],
+       value: ['/opt/cuda/include/', '/usr/local/cuda/include/', '/usr/lib/cuda/include/'],
        description: 'Paths to cudnn include directory')
 
 option('build_backends',
@@ -78,20 +63,40 @@ option('ispc_native_only',
        value: true,
        description: 'use ispc and enable native arch only')
 
+option('native_cuda',
+       type: 'boolean',
+       value: true,
+       description: 'build cuda code for native arch only (if supported)')
+
 option('cudnn',
        type: 'boolean',
        value: true,
        description: 'Enable cuDNN backend')
+
+option('plain_cuda',
+       type: 'boolean',
+       value: true,
+       description: 'Enable CUDA backend')
 
 option('opencl',
        type: 'boolean',
        value: true,
        description: 'Enable OpenCL backend')
 
+option('dx',
+       type: 'boolean',
+       value: true,
+       description: 'Enable DirectX12 backend')
+
 option('tensorflow',
        type: 'boolean',
        value: false,
        description: 'Enable TensorFlow backend')
+
+option('onednn',
+       type: 'boolean',
+       value: false,
+       description: 'Enable oneDNN backend')
 
 option('openblas',
        type: 'boolean',
@@ -103,27 +108,97 @@ option('mkl',
        value: true,
        description: 'Enable MKL BLAS support')
 
+option('dnnl',
+       type: 'boolean',
+       value: false,
+       description: 'Enable DNNL BLAS support')
+
 option('accelerate',
        type: 'boolean',
        value: true,
        description: 'Enable Accelerate BLAS support')
+
+option('metal',
+       type: 'feature',
+       value: 'auto',
+       description: 'Enable Metal backend')
+
+option('malloc',
+       type : 'string',
+       value: '',
+       description: 'Use alternative memory allocator, e.g. tcmalloc/jemalloc')
+
+option('mimalloc_libdir',
+       type : 'string',
+       value: '',
+       description: 'Library directory for malloc=mimalloc')
 
 option('popcnt',
        type: 'boolean',
        value: true,
        description: 'Use the popcnt instruction')
 
+option('f16c',
+       type: 'boolean',
+       value: true,
+       description: 'Use natice fp16 conversion instructions')
+
 option('pext',
        type: 'boolean',
        value: false,
        description: 'Use the pext instruction')
+
+option('neon',
+       type: 'boolean',
+       value: true,
+       description: 'Use neon instructions on arm processors')
 
 option('gtest',
        type: 'boolean',
        value: true,
        description: 'Build gtest tests')
 
-option('protobuf-3-6-0',
+option('embed',
        type: 'boolean',
        value: false,
-       description: 'Use the protobuf 3.6.0 subproject')
+       description: 'Use embedded net by default')
+
+option('nvcc_ccbin',
+       type: 'string',
+       value: '',
+       description: 'Override C++ compiler used by cuda nvcc')
+
+option('python_bindings',
+       type: 'boolean',
+       value: false,
+       description: 'Build Python bindings for the python to bind.')
+
+option('cc_cuda',
+       type: 'string',
+       value: '',
+       description: 'Build for a specific cuda CC, e.g. -Dcc_cuda=35 for CC 3.5')
+
+option('onnx_libdir',
+       type: 'string',
+       value: '',
+       description: 'Paths to ONNX runtime libraries')
+
+option('onnx_include',
+       type: 'string',
+       value: '',
+       description: 'Paths to ONNX runtime includes')
+
+option('xla',
+       type: 'boolean',
+       value: false,
+       description: 'Enable XLA backend')
+
+option('lc0',
+       type: 'boolean',
+       value: true,
+       description: 'Build Lc0')
+
+option('rescorer',
+       type: 'boolean',
+       value: false,
+       description: 'Build rescorer')

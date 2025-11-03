@@ -27,14 +27,18 @@
 
 #pragma once
 
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 
 namespace lczero {
 // These stunts are performed by trained professionals, do not try this at home.
 
 // Fast approximate log2(x). Does no range checking.
-// The approximation used here is log2(2^N*(1+f)) ~ N+f*(1.342671-0.342671*f)
-// where N is the integer and f the fractional part, f>=0.
+// The approximation used here is log2(2^N*(1+f)) ~ N+f*(1+k-k*f) where N is the
+// exponent and f the fraction (mantissa), f>=0. The constant k is used to tune
+// the approximation accuracy. In the final version some constants were slightly
+// modified for better accuracy with 32 bit floating point math.
 inline float FastLog2(const float a) {
   uint32_t tmp;
   std::memcpy(&tmp, &a, sizeof(float));
@@ -42,17 +46,30 @@ inline float FastLog2(const float a) {
   tmp = (tmp & 0x7fffff) | (0x7f << 23);
   float out;
   std::memcpy(&out, &tmp, sizeof(float));
-  return out * (2.028011f - 0.342671f * out) - 128.68534f + expb;
+  out -= 1.0f;
+  // Minimize max absolute error.
+  return out * (1.3465552f - 0.34655523f * out) - 127 + expb;
 }
 
 // Fast approximate 2^x. Does only limited range checking.
-// The approximation used here is 2^(N+f) ~ 2^N*(1+f*(0.656366+0.343634*f))
-// where N is the integer and f the fractional part, f>=0.
-inline float FastPow2(const float a) {
-  if (a < -126) return 0.0;
-  int32_t exp = floor(a);
+// The approximation used here is 2^(N+f) ~ 2^N*(1+f*(1-k+k*f)) where N is the
+// integer and f the fractional part, f>=0. The constant k is used to tune the
+// approximation accuracy. In the final version some constants were slightly
+// modified for better accuracy with 32 bit floating point math.
+inline float FastExp2(const float a) {
+  int32_t exp;
+  if (a < 0) {
+    if (a < -126) return 0.0;
+    // Not all compilers optimize floor, so we use (a-1) here to round down.
+    // This is obviously off-by-one for integer a, but fortunately the error
+    // correction term gives the exact value for 1 (by design, for continuity).
+    exp = static_cast<int32_t>(a - 1);
+  } else {
+    exp = static_cast<int32_t>(a);
+  }
   float out = a - exp;
-  out = 1.0f + out * (0.656366f + 0.343634f * out);
+  // Minimize max relative error.
+  out = 1.0f + out * (0.6602339f + 0.33976606f * out);
   int32_t tmp;
   std::memcpy(&tmp, &out, sizeof(float));
   tmp += static_cast<int32_t>(static_cast<uint32_t>(exp) << 23);
@@ -63,6 +80,28 @@ inline float FastPow2(const float a) {
 // Fast approximate ln(x). Does no range checking.
 inline float FastLog(const float a) {
   return 0.6931471805599453f * FastLog2(a);
+}
+
+// Fast approximate exp(x). Does only limited range checking.
+inline float FastExp(const float a) { return FastExp2(1.442695040f * a); }
+
+// Safeguarded fast logistic function, based on FastExp().
+inline float FastLogistic(const float a) {
+  if (a > 20.0f) {return 1.0f;}
+  if (a < -20.0f) {return 0.0f;}
+  return 1.0f / (1.0f + FastExp(-a));
+}
+
+inline float FastSign(const float a) {
+  // Microsoft compiler does not have a builtin for copysign and emits a
+  // library call which is too expensive for hot paths.
+#if defined(_MSC_VER)
+  // This doesn't treat signed 0's the same way that copysign does, but it
+  // should be good enough, for our use case.
+  return a < 0 ? -1.0f : 1.0f;
+#else
+  return std::copysign(1.0f, a);
+#endif
 }
 
 }  // namespace lczero

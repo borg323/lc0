@@ -25,17 +25,25 @@
   Program grant you additional permission to convey the resulting work.
 */
 
+#pragma once
+
 #include <iterator>
 #include <vector>
+
 #include "proto/net.pb.h"
 
 namespace lczero {
 
 class LayerAdapter {
  public:
-  class Iterator
-      : public std::iterator<std::random_access_iterator_tag, float> {
+  class Iterator {
    public:
+    using iterator_category = std::random_access_iterator_tag;
+    using value_type = float;
+    using difference_type = std::ptrdiff_t;
+    using pointer = float*;
+    using reference = float&;
+
     Iterator() = default;
     Iterator(const Iterator& other) = default;
 
@@ -71,7 +79,7 @@ class LayerAdapter {
     const uint16_t* data_ = nullptr;
   };
 
-  LayerAdapter(const pblczero::Weights_Layer& layer);
+  LayerAdapter(const pblczero::Weights::Layer& layer);
   std::vector<float> as_vector() const;
   size_t size() const { return size_; }
   float operator[](size_t idx) const { return begin()[idx]; }

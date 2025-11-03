@@ -1,6 +1,6 @@
 /*
  This file is part of Leela Chess Zero.
- Copyright (C) 2018 The LCZero Authors
+ Copyright (C) 2018-2020 The LCZero Authors
 
  Leela Chess is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@
 #include <cmath>
 #include <iomanip>
 
+#include "neural/decoder.h"
 #include "neural/factory.h"
 #include "neural/network.h"
 #include "utils/histogram.h"
@@ -51,6 +52,7 @@ struct CheckParams {
   CheckMode mode;
   double absolute_tolerance;
   double relative_tolerance;
+  pblczero::NetworkFormat::InputFormat input_format;
 };
 
 class CheckComputation : public NetworkComputation {
@@ -67,6 +69,12 @@ class CheckComputation : public NetworkComputation {
     InputPlanes y = input;
     work_comp_->AddInput(std::move(x));
     check_comp_->AddInput(std::move(y));
+
+    ChessBoard board;
+    int rule50;
+    int gameply;
+    PopulateBoard(params_.input_format, input, &board, &rule50, &gameply);
+    moves_.emplace_back(board.GenerateLegalMoves());
   }
 
   void ComputeBlocking() override {
@@ -97,13 +105,39 @@ class CheckComputation : public NetworkComputation {
     return work_comp_->GetDVal(sample);
   }
 
+  float GetMVal(int sample) const override {
+    return work_comp_->GetMVal(sample);
+  }
+
   float GetPVal(int sample, int move_id) const override {
     return work_comp_->GetPVal(sample, move_id);
   }
 
  private:
-  static constexpr int kNumOutputPolicies = 1858;
   const CheckParams& params_;
+  std::vector<MoveList> moves_;
+
+  std::vector<float> PolicySoftMax(const NetworkComputation* comp, int sample,
+                                   const std::vector<Move>& moves) const {
+    float max_p = -std::numeric_limits<float>::infinity();
+    std::vector<float> policy;
+    policy.reserve(moves.size());
+    for (const auto move : moves) {
+      policy.emplace_back(comp->GetPVal(sample, move.as_nn_index(0)));
+      max_p = std::max(max_p, policy.back());
+    }
+    float total = 0;
+    for (auto& p : policy) {
+      p = std::exp(p - max_p);
+      total += p;
+    }
+    if (total > 0) {
+      for (auto& p : policy) {
+        p /= total;
+      }
+    }
+    return policy;
+  }
 
   void CheckOnly() const {
     bool valueAlmostEqual = true;
@@ -116,10 +150,10 @@ class CheckComputation : public NetworkComputation {
 
     bool policyAlmostEqual = true;
     for (int i = 0; i < size && policyAlmostEqual; i++) {
-      for (int j = 0; j < kNumOutputPolicies; j++) {
-        const float v1 = work_comp_->GetPVal(i, j);
-        const float v2 = check_comp_->GetPVal(i, j);
-        policyAlmostEqual &= IsAlmostEqual(v1, v2);
+      const auto work = PolicySoftMax(work_comp_.get(), i, moves_[i]);
+      const auto check = PolicySoftMax(check_comp_.get(), i, moves_[i]);
+      for (size_t j = 0; j < work.size(); j++) {
+        policyAlmostEqual &= IsAlmostEqual(work[j], check[j]);
       }
     }
 
@@ -158,10 +192,10 @@ class CheckComputation : public NetworkComputation {
       const float qv1 = work_comp_->GetQVal(i);
       const float qv2 = check_comp_->GetQVal(i);
       histogram.Add(qv2 - qv1);
-      for (int j = 0; j < kNumOutputPolicies; j++) {
-        const float pv1 = work_comp_->GetPVal(i, j);
-        const float pv2 = check_comp_->GetPVal(i, j);
-        histogram.Add(pv2 - pv1);
+      const auto work = PolicySoftMax(work_comp_.get(), i, moves_[i]);
+      const auto check = PolicySoftMax(check_comp_.get(), i, moves_[i]);
+      for (size_t j = 0; j < work.size(); j++) {
+        histogram.Add(check[j] - work[j]);
       }
     }
     CERR << "Absolute error histogram for a batch of " << size;
@@ -211,10 +245,10 @@ class CheckComputation : public NetworkComputation {
 
     MaximumError policy_error;
     for (int i = 0; i < size; i++) {
-      for (int j = 0; j < kNumOutputPolicies; j++) {
-        const float v1 = work_comp_->GetPVal(i, j);
-        const float v2 = check_comp_->GetPVal(i, j);
-        policy_error.Add(v1, v2);
+      const auto work = PolicySoftMax(work_comp_.get(), i, moves_[i]);
+      const auto check = PolicySoftMax(check_comp_.get(), i, moves_[i]);
+      for (size_t j = 0; j < work.size(); j++) {
+        policy_error.Add(work[j], check[j]);
       }
     }
 
@@ -235,7 +269,8 @@ class CheckNetwork : public Network {
   static constexpr double kDefaultAbsoluteTolerance = 1e-5;
   static constexpr double kDefaultRelativeTolerance = 1e-4;
 
-  CheckNetwork(const WeightsFile& weights, const OptionsDict& options) {
+  CheckNetwork(const std::optional<WeightsFile>& weights,
+               const OptionsDict& options) {
     params_.mode = kDefaultMode;
     params_.absolute_tolerance = kDefaultAbsoluteTolerance;
     params_.relative_tolerance = kDefaultRelativeTolerance;
@@ -246,7 +281,7 @@ class CheckNetwork : public Network {
     OptionsDict& backend1_dict = dict1;
 
     OptionsDict dict2;
-    std::string backendName2 = "blas";
+    std::string backendName2 = "eigen";
     OptionsDict& backend2_dict = dict2;
 
     const std::string mode = options.GetOrDefault<std::string>("mode", "check");
@@ -288,14 +323,19 @@ class CheckNetwork : public Network {
     check_net_ =
         NetworkFactory::Get()->Create(backendName2, weights, backend2_dict);
 
+    capabilities_ = work_net_->GetCapabilities();
+    capabilities_.Merge(check_net_->GetCapabilities());
+
+    params_.input_format = capabilities_.input_format;
+
     check_frequency_ =
         options.GetOrDefault<float>("freq", kDefaultCheckFrequency);
     switch (params_.mode) {
       case kCheckOnly:
         CERR << std::scientific << std::setprecision(1)
              << "Check mode: check only with relative tolerance "
-             << params_.absolute_tolerance << ", absolute tolerance "
-             << params_.relative_tolerance << ".";
+             << params_.relative_tolerance << ", absolute tolerance "
+             << params_.absolute_tolerance << ".";
         break;
       case kErrorDisplay:
         CERR << "Check mode: error display.";
@@ -322,6 +362,10 @@ class CheckNetwork : public Network {
     return work_net_->NewComputation();
   }
 
+  const NetworkCapabilities& GetCapabilities() const override {
+    return capabilities_;
+  }
+
  private:
   CheckParams params_;
 
@@ -329,10 +373,11 @@ class CheckNetwork : public Network {
   double check_frequency_;
   std::unique_ptr<Network> work_net_;
   std::unique_ptr<Network> check_net_;
+  NetworkCapabilities capabilities_;
 };
 
-std::unique_ptr<Network> MakeCheckNetwork(const WeightsFile& weights,
-                                          const OptionsDict& options) {
+std::unique_ptr<Network> MakeCheckNetwork(
+    const std::optional<WeightsFile>& weights, const OptionsDict& options) {
   return std::make_unique<CheckNetwork>(weights, options);
 }
 

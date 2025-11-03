@@ -2,27 +2,64 @@ version: 2
 jobs:
   build:
     docker:
-      - image: danieluranga/leela_chess_zero-lc0_ubuntu_builder:0.0.4
+      - image: danieluranga/leela_chess_zero-lc0_ubuntu_builder:0.0.8
     steps:
       - checkout
       - run:
           name: "Pull Submodules"
+          command: git submodule update --init
+      - run:
+          name: Update Meson
+          command: pip3 install --upgrade meson==0.58.1
+      - run:
+          name: Meson GCC
+          environment:
+            CC: gcc-8
+            CXX: g++-8
+          command: meson build-gcc -Dgtest=false
+      - run:
+          name: Build GCC
           command: |
-            git submodule init
-            git submodule update --remote
+            cd build-gcc
+            ninja -j 4
+  "mac":
+    macos:
+      xcode: 14.1.0
+    resource_class: macos.m1.medium.gen1
+    steps:
+      - checkout
       - run:
-          name: Build clang version
-          command: CC=clang-6.0 CXX=clang++-6.0 ./build.sh
+          name: "Pull Submodules"
+          command: git submodule update --init
       - run:
-          command: cp build/release/lc0 /tmp/lc0-clang
+          name: Install build tools
+          command: |
+            pip3 install meson==0.63
+            pip3 install ninja
+            curl -LJOs https://github.com/ispc/ispc/releases/download/v1.21.0/ispc-v1.21.0-macOS.universal.tar.gz
+            tar xf ispc-v1.21.0-macOS.universal.tar.gz
+            cp ispc-v1.21.0-macOS.universal/bin/ispc /usr/local/bin
       - run:
-          name: Build g++ version
-          command: ./build.sh
+          name: Build lc0
+          command: |
+            meson build --buildtype=release -Dgtest=false -Dopencl=false  --cross-file cross-files/x86_64-darwin
+            cd build
+            ninja
       - run:
-          command: cp build/release/lc0 /tmp/lc0-g++
+          name: Build lc0 arm
+          command: |
+            meson build-arm --buildtype=release -Dgtest=false -Dopencl=false
+            cd build-arm
+            ninja
+      - run:
+          name: Make universal binary
+          command: lipo -create -o /tmp/lc0 build/lc0 build-arm/lc0
       - store_artifacts:
-          path: /tmp/lc0-clang
-          destination: lc0-ubuntu-18-04-clang
-      - store_artifacts:
-          path: /tmp/lc0-g++
-          destination: lc0-ubuntu-18-04-g++
+          path: /tmp/lc0
+          destination: lc0-macos_12.6.1
+workflows:
+  version: 2
+  builds:
+    jobs:
+      - build
+      - "mac"

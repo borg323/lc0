@@ -27,7 +27,9 @@
 
 #pragma once
 
+#include <cassert>
 #include <string>
+
 #include "chess/bitboard.h"
 #include "utils/hashcat.h"
 
@@ -58,16 +60,20 @@ class KingAttackInfo {
 class ChessBoard {
  public:
   ChessBoard() = default;
+  ChessBoard(const ChessBoard&) = default;
   ChessBoard(const std::string& fen) { SetFromFen(fen); }
+
+  ChessBoard& operator=(const ChessBoard&) = default;
 
   static const char* kStartposFen;
   static const ChessBoard kStartposBoard;
+  static const BitBoard kPawnMask;
 
   // Sets position from FEN string.
-  // If @no_capture_ply and @moves are not nullptr, they are filled with number
+  // If @rule50_ply and @moves are not nullptr, they are filled with number
   // of moves without capture and number of full moves since the beginning of
   // the game.
-  void SetFromFen(const std::string& fen, int* no_capture_ply = nullptr,
+  void SetFromFen(std::string fen, int* rule50_ply = nullptr,
                   int* moves = nullptr);
   // Nullifies the whole structure.
   void Clear();
@@ -95,6 +101,12 @@ class ChessBoard {
   MoveList GenerateLegalMoves() const;
   // Check whether pseudolegal move is legal.
   bool IsLegalMove(Move move, const KingAttackInfo& king_attack_info) const;
+  // Returns whether two moves are actually the same move in the position.
+  bool IsSameMove(Move move1, Move move2) const;
+  // Returns the same move but with castling encoded in legacy way.
+  Move GetLegacyMove(Move move) const;
+  // Returns the same move but with castling encoded in modern way.
+  Move GetModernMove(Move move) const;
 
   uint64_t Hash() const {
     return HashCat({our_pieces_.as_int(), their_pieces_.as_int(),
@@ -107,6 +119,13 @@ class ChessBoard {
 
   class Castlings {
    public:
+    Castlings()
+        : our_queenside_rook_(FILE_A),
+          their_queenside_rook_(FILE_A),
+          our_kingside_rook_(FILE_H),
+          their_kingside_rook_(FILE_H),
+          data_(0) {}
+
     void set_we_can_00() { data_ |= 1; }
     void set_we_can_000() { data_ |= 2; }
     void set_they_can_00() { data_ |= 4; }
@@ -123,45 +142,102 @@ class ChessBoard {
     bool they_can_000() const { return data_ & 8; }
     bool no_legal_castle() const { return data_ == 0; }
 
-    void Mirror() { data_ = ((data_ & 0b11) << 2) + ((data_ & 0b1100) >> 2); }
+    void Mirror() {
+      std::swap(our_queenside_rook_, their_queenside_rook_);
+      std::swap(our_kingside_rook_, their_kingside_rook_);
+      data_ = ((data_ & 0b11) << 2) + ((data_ & 0b1100) >> 2);
+    }
 
+    // Note: this is not a strict xfen compatible output. Without access to the
+    // board its not possible to know whether there is ambiguity so all cases
+    // with any non-standard rook positions are encoded in the x-fen format
     std::string as_string() const {
       if (data_ == 0) return "-";
       std::string result;
+      if (our_queenside_rook() == FILE_A && our_kingside_rook() == FILE_H &&
+          their_queenside_rook() == FILE_A && their_kingside_rook() == FILE_H) {
+        if (we_can_00()) result += 'K';
+        if (we_can_000()) result += 'Q';
+        if (they_can_00()) result += 'k';
+        if (they_can_000()) result += 'q';
+      } else {
+        if (we_can_00()) result += 'A' + our_kingside_rook();
+        if (we_can_000()) result += 'A' + our_queenside_rook();
+        if (they_can_00()) result += 'a' + their_kingside_rook();
+        if (they_can_000()) result += 'a' + their_queenside_rook();
+      }
+      return result;
+    }
+
+    std::string DebugString() const {
+      std::string result;
+      if (data_ == 0) result = "-";
       if (we_can_00()) result += 'K';
       if (we_can_000()) result += 'Q';
       if (they_can_00()) result += 'k';
       if (they_can_000()) result += 'q';
+      result += '[';
+      result += 'A' + our_queenside_rook();
+      result += 'A' + our_kingside_rook();
+      result += 'a' + their_queenside_rook();
+      result += 'a' + their_kingside_rook();
+      result += ']';
       return result;
     }
 
     uint8_t as_int() const { return data_; }
 
     bool operator==(const Castlings& other) const {
+      assert(our_queenside_rook_ == other.our_queenside_rook_ &&
+             our_kingside_rook_ == other.our_kingside_rook_ &&
+             their_queenside_rook_ == other.their_queenside_rook_ &&
+             their_kingside_rook_ == other.their_kingside_rook_);
       return data_ == other.data_;
     }
 
+    uint8_t our_queenside_rook() const { return our_queenside_rook_; }
+    uint8_t our_kingside_rook() const { return our_kingside_rook_; }
+    uint8_t their_queenside_rook() const { return their_queenside_rook_; }
+    uint8_t their_kingside_rook() const { return their_kingside_rook_; }
+    void SetRookPositions(uint8_t our_left, uint8_t our_right,
+                          uint8_t their_left, uint8_t their_right) {
+      our_queenside_rook_ = our_left;
+      our_kingside_rook_ = our_right;
+      their_queenside_rook_ = their_left;
+      their_kingside_rook_ = their_right;
+    }
+
    private:
-    std::uint8_t data_ = 0;
+    // Position of "left" (queenside) rook in starting game position.
+    uint8_t our_queenside_rook_;
+    uint8_t their_queenside_rook_;
+    // Position of "right" (kingside) rook in starting position.
+    uint8_t our_kingside_rook_;
+    uint8_t their_kingside_rook_;
+
+    // - Bit 0 -- "our" side's kingside castle.
+    // - Bit 1 -- "our" side's queenside castle.
+    // - Bit 2 -- opponent's side's kingside castle.
+    // - Bit 3 -- opponent's side's queenside castle.
+    uint8_t data_;
   };
 
   std::string DebugString() const;
 
   BitBoard ours() const { return our_pieces_; }
   BitBoard theirs() const { return their_pieces_; }
-  BitBoard pawns() const;
-  BitBoard en_passant() const;
+  BitBoard pawns() const { return pawns_ & kPawnMask; }
+  BitBoard en_passant() const { return pawns_ - kPawnMask; }
   BitBoard bishops() const { return bishops_ - rooks_; }
   BitBoard rooks() const { return rooks_ - bishops_; }
   BitBoard queens() const { return rooks_ & bishops_; }
-  BitBoard our_knights() const {
-    return our_pieces_ - pawns() - our_king_ - rooks_ - bishops_;
+  BitBoard knights() const {
+    return (our_pieces_ | their_pieces_) - pawns() - our_king_ - their_king_ -
+           rooks_ - bishops_;
   }
-  BitBoard their_knights() const {
-    return their_pieces_ - pawns() - their_king_ - rooks_ - bishops_;
+  BitBoard kings() const {
+    return our_king_.as_board() | their_king_.as_board();
   }
-  BitBoard our_king() const { return 1ull << our_king_.as_int(); }
-  BitBoard their_king() const { return 1ull << their_king_.as_int(); }
   const Castlings& castlings() const { return castlings_; }
   bool flipped() const { return flipped_; }
 
@@ -175,6 +251,31 @@ class ChessBoard {
   }
 
   bool operator!=(const ChessBoard& other) const { return !operator==(other); }
+
+  enum Square : uint8_t {
+    // clang-format off
+    A1 = 0, B1, C1, D1, E1, F1, G1, H1,
+    A2, B2, C2, D2, E2, F2, G2, H2,
+    A3, B3, C3, D3, E3, F3, G3, H3,
+    A4, B4, C4, D4, E4, F4, G4, H4,
+    A5, B5, C5, D5, E5, F5, G5, H5,
+    A6, B6, C6, D6, E6, F6, G6, H6,
+    A7, B7, C7, D7, E7, F7, G7, H7,
+    A8, B8, C8, D8, E8, F8, G8, H8,
+    // clang-format on
+  };
+
+  enum File : uint8_t {
+    // clang-format off
+    FILE_A = 0, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H
+    // clang-format on
+  };
+
+  enum Rank : uint8_t {
+    // clang-format off
+    RANK_1 = 0, RANK_2, RANK_3, RANK_4, RANK_5, RANK_6, RANK_7, RANK_8
+    // clang-format on
+  };
 
  private:
   // All white pieces.

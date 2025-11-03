@@ -26,6 +26,7 @@
 */
 
 #include "chess/bitboard.h"
+
 #include "utils/exception.h"
 
 namespace lczero {
@@ -280,6 +281,19 @@ const int kKingCastleIndex =
     kMoveToIdx[BoardSquare("e1").as_int() * 64 + BoardSquare("h1").as_int()];
 const int kQueenCastleIndex =
     kMoveToIdx[BoardSquare("e1").as_int() * 64 + BoardSquare("a1").as_int()];
+
+BoardSquare Transform(BoardSquare sq, int transform) {
+  if ((transform & FlipTransform) != 0) {
+    sq.set(sq.row(), 7 - sq.col());
+  }
+  if ((transform & MirrorTransform) != 0) {
+    sq.set(7 - sq.row(), sq.col());
+  }
+  if ((transform & TransposeTransform) != 0) {
+    sq.set(7 - sq.col(), 7 - sq.row());
+  }
+  return sq;
+}
 }  // namespace
 
 Move::Move(const std::string& str, bool black) {
@@ -320,10 +334,32 @@ uint16_t Move::as_packed_int() const {
   }
 }
 
-uint16_t Move::as_nn_index() const {
-  if (!castling()) return kMoveToIdx[as_packed_int()];
-  if (from().col() < to().col()) return kKingCastleIndex;
-  return kQueenCastleIndex;
+uint16_t Move::as_nn_index(int transform) const {
+  if (transform == 0) {
+    return kMoveToIdx[as_packed_int()];
+  }
+  Move transformed = *this;
+  transformed.SetTo(Transform(to(), transform));
+  transformed.SetFrom(Transform(from(), transform));
+  return transformed.as_nn_index(0);
+}
+
+Move MoveFromNNIndex(int idx, int transform) {
+  Move m = kIdxToMove[idx];
+  if (transform == 0) {
+    return m;
+  }
+  int inv_transform;
+  if (transform & TransposeTransform) {
+    inv_transform = TransposeTransform;
+    if (transform & FlipTransform) inv_transform |= MirrorTransform;
+    if (transform & MirrorTransform) inv_transform |= FlipTransform;
+  } else {
+    inv_transform = transform;
+  }
+  m.SetTo(Transform(m.to(), inv_transform));
+  m.SetFrom(Transform(m.from(), inv_transform));
+  return m;
 }
 
 }  // namespace lczero

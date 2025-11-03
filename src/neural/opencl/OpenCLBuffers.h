@@ -40,6 +40,7 @@
 #include "utils/logging.h"
 
 class OpenCL_Network;
+class OpenCL;
 
 class OpenCLBuffers {
   friend class OpenCL;
@@ -49,7 +50,8 @@ class OpenCLBuffers {
   OpenCLBuffers(const OpenCL_Network& opencl_net);
 
   void forward(const std::vector<net_t>& input, std::vector<net_t>& output_pol,
-               std::vector<net_t>& output_val, const int batch_size);
+               std::vector<net_t>& output_val, std::vector<net_t>& output_mov,
+               const int batch_size);
 
  private:
   using weight_slice_t = std::vector<cl::Buffer>::const_iterator;
@@ -99,4 +101,8 @@ class OpenCLBuffers {
   cl::Buffer m_pool_buffer;
   cl::Buffer m_pinnedOutBuffer_pol;
   cl::Buffer m_pinnedOutBuffer_val;
+  cl::Buffer m_pinnedOutBuffer_mov;
+  size_t m_finalSize_pol;
+  size_t m_finalSize_val;
+  size_t m_finalSize_mov;
 };
