@@ -61,8 +61,6 @@ const OptionId kOnnxEinsumId{"onnx-use-einsum", "",
 const OptionId kHloAllowPartialResultId = {
     "hlo-allow-partial-result", "",
     "Allow partial result in case of HLO conversion failure (DEBUG ONLY!)."};
-const OptionId kRelaxOpTypes{
-    "relax-op-types", "", "Use onnx-data-type even if unsuported by operator."};
 
 const OptionId kInputPlanesName{"input-planes-name", "",
                                 "ONNX name to use for the input planes node."};
@@ -100,13 +98,10 @@ bool ProcessParameters(OptionsParser* options) {
   options->Add<BoolOption>(kOnnxEinsumId) = false;
   options->Add<IntOption>(kHloBatchSizeId, 1, 2048) = 333;
   options->Add<ChoiceOption>(
-      kOnnxDataTypeId,
-      std::vector<std::string>{"f32", "f16", "bf16", "f8e5m2"}) = "f32";
+      kOnnxDataTypeId, std::vector<std::string>{"f32", "f16", "bf16"}) = "f32";
   options->Add<BoolOption>(kHloAllowPartialResultId);
-  options->Add<BoolOption>(kRelaxOpTypes) = false;
   options->HideOption(kOnnxBatchSizeId);
   options->HideOption(kHloAllowPartialResultId);
-  options->HideOption(kRelaxOpTypes);
 
   options->Add<StringOption>(kInputPlanesName) = "/input/planes";
   options->Add<StringOption>(kOutputPolicyHead) = "/output/policy";
@@ -124,7 +119,7 @@ bool ProcessParameters(OptionsParser* options) {
       !dict.OwnExists<std::string>(kHloTextOutputFilenameId) &&
       !dict.OwnExists<std::string>(kHloProtoOutputFilenameId)) {
     throw Exception(
-        "At least one of --output, --hlo-output or --hlo-proto-output "
+        "At least one of --output, --hlo-text-output or --hlo-proto-output "
         "must be specified.");
   }
   return true;
@@ -157,7 +152,6 @@ void ConvertLeelaToOnnx() {
     onnx_options.batch_size = dict.Get<int>(kOnnxBatchSizeId);
     onnx_options.data_type = WeightsToOnnxConverterOptions::StringToDataType(
         dict.Get<std::string>(kOnnxDataTypeId));
-    onnx_options.relax_op_types = dict.Get<bool>(kRelaxOpTypes);
     // onnx2pytorch only needs an alternate layernorm-implementation, so it's
     // currently only enables that. Might need to be extended in the future.
     onnx_options.alt_layernorm = dict.Get<bool>(kOnnxToPytorch);

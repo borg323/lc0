@@ -302,6 +302,9 @@ std::unique_ptr<Network> MakeXlaNetwork(const std::optional<WeightsFile>& w,
     onnx_converter_options.data_type =
         WeightsToOnnxConverterOptions::StringToDataType(
             opts.GetOrDefault<std::string>("datatype", "f32"));
+    onnx_converter_options.opset = 22;  // For full onnx bfloat16 support.
+    onnx_converter_options.alt_mish =
+        opts.GetOrDefault<bool>("alt_mish", false);
     onnx_converter_options.fold_matmul =
         opts.GetOrDefault<bool>("fold_matmul", true);
     onnx_converter_options.use_einsum =

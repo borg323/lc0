@@ -90,6 +90,14 @@ class NetworkFactory {
              std::tie(other.weights_path, other.backend, other.backend_options);
     }
   };
+  struct BackendConfigurationHash {
+    std::size_t operator()(BackendConfiguration const& s) const noexcept {
+      std::size_t h1 = std::hash<std::string>{}(s.weights_path);
+      std::size_t h2 = std::hash<std::string>{}(s.backend);
+      std::size_t h3 = std::hash<std::string>{}(s.backend_options);
+      return (h1 ^ (h2 * 33))*33 ^ (h3);
+    }
+  };
 
  private:
   void RegisterNetwork(const std::string& name, FactoryFunc factory,
