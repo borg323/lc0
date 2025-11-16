@@ -38,9 +38,9 @@
 #include "neural/network_legacy.h"
 #include "neural/onnx/adapters.h"
 #include "neural/onnx/builder.h"
-#include "neural/shared/activation.h"
-#include "neural/shared/attention_policy_map.h"
-#include "neural/shared/policy_map.h"
+#include "neural/tables/activation_function.h"
+#include "neural/tables/attention_policy_map.h"
+#include "neural/tables/policy_map.h"
 #include "proto/net.pb.h"
 #include "utils/bf16_utils.h"
 #include "utils/exception.h"
@@ -229,7 +229,7 @@ std::unique_ptr<OnnxConst> Converter::GetScalarConverter(float in) {
 std::string Converter::StartOptionalBf16Fix(OnnxBuilder* builder,
                                             std::string flow,
                                             std::string name) {
-  if (options_.relax_op_types ||
+  if (options_.opset >= 22 ||
       options_.data_type !=
           WeightsToOnnxConverterOptions::DataType::kBFloat16) {
     return flow;
@@ -239,7 +239,7 @@ std::string Converter::StartOptionalBf16Fix(OnnxBuilder* builder,
 
 std::string Converter::EndOptionalBf16Fix(OnnxBuilder* builder,
                                           std::string flow, std::string name) {
-  if (options_.relax_op_types ||
+  if (options_.opset >= 22 ||
       options_.data_type !=
           WeightsToOnnxConverterOptions::DataType::kBFloat16) {
     return flow;
@@ -250,8 +250,7 @@ std::string Converter::EndOptionalBf16Fix(OnnxBuilder* builder,
 
 std::string Converter::MakeMish(OnnxBuilder* builder, const std::string& input,
                                 const std::string& name) {
-  if (!options_.alt_mish || options_.opset < 9 ||
-      options_.data_type != WeightsToOnnxConverterOptions::DataType::kFloat32) {
+  if (!options_.alt_mish || options_.opset < 9) {
     std::string flow = input;
     flow = StartOptionalBf16Fix(builder, flow, name);
     if (options_.opset >= 18) {
@@ -263,20 +262,24 @@ std::string Converter::MakeMish(OnnxBuilder* builder, const std::string& input,
     flow = builder->Tanh(name + "/tanh", flow);
     return builder->Mul(name, flow, input);
   } else {
-    const OnnxConst& two =
-        static_cast<const OnnxConst&>(FloatOnnxConst({2.0f}, {1}));
-    const OnnxConst& zero =
-        static_cast<const OnnxConst&>(FloatOnnxConst({0.0f}, {1}));
-    auto e = builder->Exp(name + "/exp", input);
+    auto in = input;
+    if (options_.data_type !=
+        WeightsToOnnxConverterOptions::DataType::kFloat32) {
+      in = builder->Cast(name + "/to_float", in, pblczero::TensorProto::FLOAT);
+    }
+    auto one = builder->AddInitializer(name + "/one", FloatOnnxConst({1}, {1}));
+    auto two = builder->AddInitializer(name + "/two", FloatOnnxConst({2}, {1}));
+    auto e = builder->Exp(name + "/e", in);
     auto flow = builder->Add(name + "/e+2", e, two);
-    auto n = builder->Mul(name + "/n", e, flow);
-    flow = builder->Add(name + "/n+2", n, two);
-    auto d = builder->Div(name + "/d", input, flow);
-    auto f = builder->Mul(name + "/n*d", n, d);
-    flow = builder->Mul(name + "/2*d", d, two);
-    auto t = builder->Sub(name + "/in-2*d", input, flow);
-    flow = builder->Greater(name + "/compare", input, zero);
-    return builder->Where(name, flow, t, f);
+    flow = builder->Mul(name + "/e*e+2e", e, flow);
+    flow = builder->Div(name + "/2/(e*e+2e)", two, flow);
+    flow = builder->Add(name + "/1+2/(e*e+2e)", flow, one);
+    flow = builder->Div(name + "/in/(1+2/(e*e+2e))", in, flow);
+    if (options_.data_type !=
+        WeightsToOnnxConverterOptions::DataType::kFloat32) {
+      flow = builder->Cast(name + "/to_data_type", flow, GetDataType());
+    }
+    return flow;
   }
 }
 
@@ -352,7 +355,7 @@ std::string Converter::MakeConvBlock(
     const std::string& name, const MultiHeadWeights::SEunit* seunit,
     const std::string& mixin, bool activation, int filters) {
   auto flow = input;
-  if (!options_.relax_op_types &&
+  if (options_.opset < 22 &&
       options_.data_type ==
           WeightsToOnnxConverterOptions::DataType::kBFloat16) {
     flow =
@@ -467,8 +470,10 @@ std::string Converter::MakeLayerNorm(OnnxBuilder* builder,
   if (!options_.alt_layernorm) {
     return builder->LayerNormalization(name, input, gammas, betas, 1, eps);
   }
-  auto in =
-      builder->Cast(name + "/to_float", input, pblczero::TensorProto::FLOAT);
+  auto in = input;
+  if (GetDataType() != pblczero::TensorProto::FLOAT) {
+    in = builder->Cast(name + "/to_float", in, pblczero::TensorProto::FLOAT);
+  }
   auto flow = builder->ReduceMean(name + "/mean", in, {1});
   in = builder->Sub(name + "/centered", in, flow);
   flow = builder->Mul(name + "/squared", in, in);
@@ -479,7 +484,9 @@ std::string Converter::MakeLayerNorm(OnnxBuilder* builder,
   flow = builder->Sqrt(name + "/std", flow);
   flow = builder->Reciprocal(name + "/inv_std", flow);
   flow = builder->Mul(name + "/normalized", in, flow);
-  flow = builder->Cast(name + "/to_data_type", flow, GetDataType());
+  if (GetDataType() != pblczero::TensorProto::FLOAT) {
+    flow = builder->Cast(name + "/to_data_type", flow, GetDataType());
+  }
   flow = builder->Mul(name + "/gammas", flow, gammas);
   flow = builder->Add(name + "/betas", flow, betas);
   return flow;
@@ -766,7 +773,7 @@ std::string Converter::MakeAttentionBody(OnnxBuilder* builder,
 
   if (weights.ip_mult_gate.size() > 0 || weights.ip_add_gate.size() > 0) {
     flow = builder->Reshape(
-        "/attn_body/ma_gating/rehape1", flow,
+        "/attn_body/ma_gating/rehape", flow,
         builder->AddInitializer("/const/ma_gating/shape1",
                                 Int64OnnxConst({-1, 64, embedding_size}, {3})));
     if (weights.ip_mult_gate.size() > 0) {
@@ -779,11 +786,12 @@ std::string Converter::MakeAttentionBody(OnnxBuilder* builder,
                           *GetWeghtsConverter(weights.ip_add_gate,
                                               {64, embedding_size}, {1, 0}));
     }
-    flow = builder->Reshape(
-        "/attn_body/ma_gating/rehape2", flow,
-        builder->AddInitializer("/const/ma_gating/shape2",
-                                Int64OnnxConst({-1, embedding_size}, {2})));
   }
+
+  flow = builder->Reshape(
+      "/attn_body/rehape", flow,
+      builder->AddInitializer("/const/ma_gating/shape2",
+                              Int64OnnxConst({-1, embedding_size}, {2})));
 
   float alpha = std::pow(2.0f * NumEncBlocks(), -0.25f);
 
@@ -929,7 +937,7 @@ void Converter::MakePolicyHead(pblczero::OnnxModel* onnx, OnnxBuilder* builder,
                                const std::string& input,
                                const MultiHeadWeights& weights) {
   // Check that selected policy head exists.
-  if (weights.policy_heads.count(options_.policy_head) == 0) {
+  if (!weights.policy_heads.contains(options_.policy_head)) {
     throw Exception("The policy head you specified '" + options_.policy_head +
                     "'" + " does not exist in this net.");
   }
@@ -997,7 +1005,7 @@ void Converter::MakeValueHead(pblczero::OnnxModel* onnx, OnnxBuilder* builder,
                               const std::string& input,
                               const MultiHeadWeights& weights) {
   // Check that selected value head exists.
-  if (weights.value_heads.count(options_.value_head) == 0) {
+  if (!weights.value_heads.contains(options_.value_head)) {
     throw Exception("The value head you specified '" + options_.value_head +
                     "'" + " does not exist in this net.");
   }
@@ -1041,9 +1049,11 @@ void Converter::MakeValueHead(pblczero::OnnxModel* onnx, OnnxBuilder* builder,
                         *GetWeghtsConverter(head.ip2_val_w, {128, 3}, {1, 0}));
     flow = builder->Add("/value/dense2/add", flow,
                         *GetWeghtsConverter(head.ip2_val_b, {3}));
-    auto output = builder->Softmax(options_.output_wdl, flow);
-    builder->AddOutput(output, {options_.batch_size, 3}, GetDataType());
-    onnx->set_output_wdl(output);
+    if (!options_.no_wdl_softmax) {
+      flow = builder->Softmax(options_.output_wdl, flow);
+    }
+    builder->AddOutput(flow, {options_.batch_size, 3}, GetDataType());
+    onnx->set_output_wdl(flow);
   } else {
     flow =
         builder->MatMul("/value/dense2/matmul", flow,
@@ -1100,15 +1110,15 @@ void Converter::MakeMovesLeftHead(pblczero::OnnxModel* onnx,
       *GetWeghtsConverter(weights.ip2_mov_w, {mlh_fc1_outputs, 1}, {1, 0}));
   flow = builder->Add("/mlh/dense2/add", flow,
                       *GetWeghtsConverter(weights.ip2_mov_b, {1}));
-  flow = MakeActivation(builder, flow, "/mlh/dense2", default_activation_);
-  auto output = builder->Identity(options_.output_mlh, flow);
+  // Explicity ReLU activation.
+  auto output = builder->Relu(options_.output_mlh, flow);
   builder->AddOutput(output, {options_.batch_size, 1}, GetDataType());
   onnx->set_output_mlh(output);
 }
 
 void Converter::GenerateOnnx(pblczero::OnnxModel* onnx) {
   MultiHeadWeights weights(src_.weights());
-  OnnxBuilder builder(options_.opset);
+  OnnxBuilder builder(options_.opset, options_.ir);
 
   if (GetDataType() == pblczero::TensorProto::FLOAT16) {
     onnx->set_data_type(pblczero::OnnxModel::FLOAT16);

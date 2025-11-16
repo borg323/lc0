@@ -235,7 +235,8 @@ class Backend {
 class GameState {
  public:
   GameState(const std::optional<std::string> startpos,
-            const std::vector<std::string>& moves) {
+            const std::vector<std::string>& moves,
+            const bool is_c960): is_c960_(is_c960) {
     ChessBoard starting_board;
     int no_capture_ply;
     int full_moves;
@@ -246,11 +247,15 @@ class GameState {
                    full_moves * 2 - (starting_board.flipped() ? 1 : 2));
 
     for (const auto& m : moves) {
-      Move move(m, history_.IsBlackToMove());
-      move = history_.Last().GetBoard().GetModernMove(move);
+      auto board = history_.Last().GetBoard();
+      Move move = board.ParseMove(m);
       history_.Append(move);
     }
   }
+
+  GameState(const std::optional<std::string> startpos,
+            const std::vector<std::string>& moves)
+      : GameState(startpos, moves, false) {}
 
   std::unique_ptr<Input> as_input(const Backend& backend) const {
     int tmp;
@@ -265,8 +270,8 @@ class GameState {
     bool is_black = history_.IsBlackToMove();
     std::vector<std::string> result;
     for (auto m : ms) {
-      if (is_black) m.Mirror();
-      result.push_back(m.as_string());
+      if (is_black) m.Flip();
+      result.push_back(m.ToString(is_c960_));
     }
     return result;
   }
@@ -275,20 +280,20 @@ class GameState {
     auto ms = history_.Last().GetBoard().GenerateLegalMoves();
     std::vector<int> result;
     for (auto m : ms) {
-      result.push_back(m.as_nn_index(/* transform= */ 0));
+      result.push_back(MoveToNNIndex(m, /* transform= */ 0));
     }
     return result;
   }
 
   std::string as_string() const {
-    bool is_black = history_.IsBlackToMove();
-    return (is_black ? history_.Last().GetThemBoard()
-                     : history_.Last().GetBoard())
-        .DebugString();
+    auto board = history_.Last().GetBoard();
+    if (history_.IsBlackToMove()) board.Mirror();
+    return board.DebugString();
   }
 
  private:
   PositionHistory history_;
+  bool is_c960_;
 };
 
 }  // namespace python
