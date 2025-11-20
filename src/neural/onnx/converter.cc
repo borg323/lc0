@@ -578,7 +578,7 @@ std::string Converter::MakeEncoderLayer(
     auto merge_b = layer.mha.q_b;
     merge_b.insert(merge_b.end(), layer.mha.k_b.begin(), layer.mha.k_b.end());
     merge_b.insert(merge_b.end(), layer.mha.v_b.begin(), layer.mha.v_b.end());
-    flow = builder->Attention(
+    flow = builder->MSAttention(
         name + "/mha", flow,
         builder->AddInitializer(
             name + "/mha/QKV/w",
@@ -591,7 +591,7 @@ std::string Converter::MakeEncoderLayer(
         name + "/mha/out/reshape", flow,
         builder->AddInitializer("/const" + name + "/mha/out/shape",
                                 Int64OnnxConst({-1, d_model}, {2})));
-  } else {
+  } else if (options_.attention == 2) {
     auto mha_shape = builder->AddInitializer(
         "/const" + name + "/mha/shape", Int64OnnxConst({-1, 64, d_model}, {3}));
     flow = builder->MatMul(
@@ -609,11 +609,42 @@ std::string Converter::MakeEncoderLayer(
     auto merge_b = layer.mha.q_b;
     merge_b.insert(merge_b.end(), layer.mha.k_b.begin(), layer.mha.k_b.end());
     merge_b.insert(merge_b.end(), layer.mha.v_b.begin(), layer.mha.v_b.end());
-    flow = builder->MultiHeadAttention(
+    flow = builder->MSMultiHeadAttention(
         name + "/mha", Q, K, V,
         builder->AddInitializer(name + "/mha/QKV/b",
                                 *GetWeghtsConverter(merge_b, {3 * d_model})),
         smolgen_weights, heads);
+    flow = builder->Reshape(
+        name + "/mha/out/reshape", flow,
+        builder->AddInitializer("/const" + name + "/mha/out/shape",
+                                Int64OnnxConst({-1, d_model}, {2})));
+  } else {
+    auto mha_shape = builder->AddInitializer(
+        "/const" + name + "/mha/shape", Int64OnnxConst({-1, 64, d_model}, {3}));
+    flow = builder->MatMul(
+        name + "/mha/Q/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.q_w, {embedding_size, d_model}, {1, 0}));
+    flow = builder->Add(name + "/mha/Q/b", flow,
+                        *GetWeghtsConverter(layer.mha.q_b, {d_model}));
+    auto Q = builder->Reshape(name + "/mha/Q/reshape", flow, mha_shape);
+    flow = builder->MatMul(
+        name + "/mha/K/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.k_w, {embedding_size, d_model}, {1, 0}));
+    flow = builder->Add(name + "/mha/K/b", flow,
+                        *GetWeghtsConverter(layer.mha.k_b, {d_model}));
+    auto K = builder->Reshape(name + "/mha/K/reshape", flow, mha_shape);
+    flow = builder->MatMul(
+        name + "/mha/V/w", encoder_in,
+        *GetWeghtsConverter(layer.mha.v_w, {embedding_size, d_model}, {1, 0}));
+    flow = builder->Add(name + "/mha/V/b", flow,
+                        *GetWeghtsConverter(layer.mha.v_b, {d_model}));
+    auto V = builder->Reshape(name + "/mha/V/reshape", flow, mha_shape);
+    if (options_.attention == 3) {
+      flow = builder->MSMultiHeadAttention(name + "/mha", Q, K, V, {},
+                                           smolgen_weights, heads);
+    } else {
+      flow = builder->Attention(name + "/mha", Q, K, V, smolgen_weights, heads);
+    }
     flow = builder->Reshape(
         name + "/mha/out/reshape", flow,
         builder->AddInitializer("/const" + name + "/mha/out/shape",

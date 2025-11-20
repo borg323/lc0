@@ -36,16 +36,16 @@
 namespace lczero {
 
 OnnxBuilder::OnnxBuilder(int opset, int ir) : opset_(opset) {
-  if (opset < 7 || opset > 22) {
-    throw Exception("Only ONNX opsets between 7 and 22 are supported.");
+  if (opset < 7 || opset > 24) {
+    throw Exception("Only ONNX opsets between 7 and 24 are supported.");
   }
   // Map of latest opset corresponding to IR version.
-  std::map<int, int> opset_to_ir = {{8, 3},  {9, 4},   {10, 5},
-                                    {11, 6}, {14, 7},  {18, 8},
-                                    {20, 9}, {22, 10}, {99, 11}};
+  std::map<int, int> opset_to_ir = {{8, 3},   {9, 4},   {10, 5}, {11, 6},
+                                    {14, 7},  {18, 8},  {20, 9}, {22, 10},
+                                    {23, 11}, {24, 12}, {99, 13}};
   if (ir < 0) ir = opset_to_ir.upper_bound(opset - 1)->second;
-  if (ir < 3 || ir > 10) {
-    throw Exception("Only ONNX IR between 3 and 10 is supported.");
+  if (ir < 3 || ir > 12) {
+    throw Exception("Only ONNX IR between 3 and 12 is supported.");
   }
   model_.set_ir_version(ir);
   model_.set_domain("org.lczero.models.*");
@@ -484,12 +484,12 @@ std::string OnnxBuilder::ReduceMean(const std::string& name,
   return out;
 }
 
-std::string OnnxBuilder::Attention(const std::string& name,
-                                   const std::string& input,
-                                   const std::string& weights,
-                                   const std::string& bias,
-                                   const std::string& attention_bias,
-                                   int heads) {
+std::string OnnxBuilder::MSAttention(const std::string& name,
+                                     const std::string& input,
+                                     const std::string& weights,
+                                     const std::string& bias,
+                                     const std::string& attention_bias,
+                                     int heads) {
   if (import_com_microsoft_) {
     auto opset = model_.add_opset_import();
     opset->set_domain("com.microsoft");
@@ -508,7 +508,7 @@ std::string OnnxBuilder::Attention(const std::string& name,
   return out;
 }
 
-std::string OnnxBuilder::MultiHeadAttention(
+std::string OnnxBuilder::MSMultiHeadAttention(
     const std::string& name, const std::string& Q, const std::string& K,
     const std::string& V, const std::string& bias,
     const std::string& attention_bias, int heads) {
@@ -527,6 +527,20 @@ std::string OnnxBuilder::MultiHeadAttention(
   node->add_input({});
   node->add_input(attention_bias);
   AddIntAttribute(node, "num_heads", heads);
+  return out;
+}
+
+std::string OnnxBuilder::Attention(const std::string& name,
+                                   const std::string& Q, const std::string& K,
+                                   const std::string& V,
+                                   const std::string& attn_mask, int heads) {
+  auto* node = model_.mutable_graph()->add_node();
+  auto out = PopulateStdNodeFields(node, name, Q, "Attention");
+  node->add_input(K);
+  node->add_input(V);
+  node->add_input(attn_mask);
+  AddIntAttribute(node, "kv_num_heads", heads);
+  AddIntAttribute(node, "q_num_heads", heads);
   return out;
 }
 }  // namespace lczero

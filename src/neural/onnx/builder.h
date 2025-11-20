@@ -126,13 +126,18 @@ class OnnxBuilder {
                    pblczero::TensorProto::DataType type);
   std::string ReduceMean(const std::string& name, const std::string& input,
                          std::initializer_list<int> axes, bool keepdims = true);
-  std::string Attention(const std::string& name, const std::string& input,
-                        const std::string& weights, const std::string& bias,
-                        const std::string& attention_bias, int heads);
-  std::string MultiHeadAttention(const std::string& name, const std::string& Q,
-                                 const std::string& K, const std::string& V,
-                                 const std::string& bias,
-                                 const std::string& attention_bias, int heads);
+  std::string MSAttention(const std::string& name, const std::string& input,
+                          const std::string& weights, const std::string& bias,
+                          const std::string& attention_bias, int heads);
+  std::string MSMultiHeadAttention(const std::string& name,
+                                   const std::string& Q, const std::string& K,
+                                   const std::string& V,
+                                   const std::string& bias,
+                                   const std::string& attention_bias,
+                                   int heads);
+  std::string Attention(const std::string& name, const std::string& Q,
+                        const std::string& K, const std::string& V,
+                        const std::string& attn_mask, int heads);
   // Returns ONNX model as protobuf.
   const pblczero::ModelProto& as_proto() const { return model_; }
   // Returns serialized model.
