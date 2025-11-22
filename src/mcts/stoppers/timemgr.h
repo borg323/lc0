@@ -55,6 +55,7 @@ struct IterationStats {
   bool win_found = false;
   bool may_resign = false;
   int num_losing_edges = 0;
+  float wl = 0.0f;
 
   enum class TimeUsageHint { kNormal, kNeedMoreTime, kImmediateMove };
   TimeUsageHint time_usage_hint_ = TimeUsageHint::kNormal;
