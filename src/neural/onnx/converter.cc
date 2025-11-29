@@ -1049,13 +1049,23 @@ void Converter::MakeValueHead(pblczero::OnnxModel* onnx, OnnxBuilder* builder,
     }
 
     if (!head.ip_val_err_b.empty()) {
-      flow2 = builder->MatMul(
+      flow = builder->MatMul(
           name + "/error/matmul", flow2,
           *GetWeghtsConverter(head.ip_val_err_w, {128, 1}, {1, 0}));
-      flow2 = builder->Add(name + "/error/add", flow2,
-                           *GetWeghtsConverter(head.ip_val_err_b, {1}));
-      auto error_out = builder->Sigmoid(name + "/err", flow2);
+      flow = builder->Add(name + "/error/add", flow,
+                          *GetWeghtsConverter(head.ip_val_err_b, {1}));
+      auto error_out = builder->Sigmoid(name + "/err", flow);
       builder->AddOutput(error_out, {options_.batch_size, 1}, GetDataType());
+    }
+
+    if (!head.ip_val_cat_b.empty()) {
+      flow = builder->MatMul(
+          name + "/cat/matmul", flow2,
+          *GetWeghtsConverter(head.ip_val_cat_w, {128, 32}, {1, 0}));
+      flow = builder->Add(name + "/cat/add", flow,
+                          *GetWeghtsConverter(head.ip_val_cat_b, {32}));
+      auto cat_out = builder->Softmax(name + "/cat", flow);
+      builder->AddOutput(cat_out, {options_.batch_size, 32}, GetDataType());
     }
   }
 }

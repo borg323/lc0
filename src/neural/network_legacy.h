@@ -216,6 +216,8 @@ struct MultiHeadWeights : public BaseWeights {
     Vec ip2_val_b;
     Vec ip_val_err_w;
     Vec ip_val_err_b;
+    Vec ip_val_cat_w;
+    Vec ip_val_cat_b;
   };
 
  private:

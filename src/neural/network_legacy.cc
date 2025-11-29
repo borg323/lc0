@@ -203,7 +203,9 @@ MultiHeadWeights::ValueHead::ValueHead(
       ip2_val_w(LayerAdapter(valuehead.ip2_val_w()).as_vector()),
       ip2_val_b(LayerAdapter(valuehead.ip2_val_b()).as_vector()),
       ip_val_err_w(LayerAdapter(valuehead.ip_val_err_w()).as_vector()),
-      ip_val_err_b(LayerAdapter(valuehead.ip_val_err_b()).as_vector()) {}
+      ip_val_err_b(LayerAdapter(valuehead.ip_val_err_b()).as_vector()),
+      ip_val_cat_w(LayerAdapter(valuehead.ip_val_cat_w()).as_vector()),
+      ip_val_cat_b(LayerAdapter(valuehead.ip_val_cat_b()).as_vector()) {}
 
 LegacyWeights::LegacyWeights(const pblczero::Weights& weights)
     : BaseWeights(weights),
