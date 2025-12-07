@@ -126,7 +126,7 @@ class OptionsParser {
   std::vector<std::unique_ptr<Option>> options_;
   OptionsDict defaults_;
   OptionsDict& values_;
-  OptionId::VisibilityMode visibility_mode_ = OptionId::kNormalMode;
+  OptionId::VisibilityMode visibility_mode_ = OptionId::kProMode;
 };
 
 class StringOption : public OptionsParser::Option {

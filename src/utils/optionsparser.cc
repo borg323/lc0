@@ -122,8 +122,8 @@ bool OptionsParser::ProcessFlags(const std::vector<std::string>& args) {
   auto show_help = false;
   if (CommandLine::BinaryName().find("simple") != std::string::npos) {
     visibility_mode_ = OptionId::kSimpleMode;
-  } else if (CommandLine::BinaryName().find("pro") != std::string::npos) {
-    visibility_mode_ = OptionId::kProMode;
+  } else if (CommandLine::BinaryName().find("normal") != std::string::npos) {
+    visibility_mode_ = OptionId::kNormalMode;
   }
   for (auto iter = args.begin(), end = args.end(); iter != end; ++iter) {
     std::string param = *iter;
