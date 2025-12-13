@@ -1,10 +1,10 @@
+cd build
 SET PGO=false
 IF %APPVEYOR_REPO_TAG%==true IF %DX%==false IF %ONNX%==false SET PGO=true
-IF %PGO%==false msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=true /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-IF EXIST build\lc0.pdb del build\lc0.pdb
-IF %PGO%==true msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=PGInstrument /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
+IF %PGO%==true meson configure -Db_pgo=generate
+ninja
+IF EXIST lc0.pdb del lc0.pdb
 IF ERRORLEVEL 1 EXIT
-cd build
 IF %NAME%==cpu-openblas copy C:\cache\OpenBLAS\dist64\bin\libopenblas.dll
 IF %NAME%==cpu-dnnl copy C:\cache\%DNNL_NAME%\bin\dnnl.dll
 IF %NAME%==onednn copy C:\cache\%DNNL_NAME%\bin\dnnl.dll
@@ -16,15 +16,13 @@ IF %PGO%==true (
   IF %CUDA%==true copy "%CUDA_PATH%"\bin\*.dll
   IF %CUDNN%==true copy "%CUDA_PATH%"\cuda\bin\cudnn64_7.dll
   lc0 benchmark --num-positions=1 --backend=trivial --movetime=10000
+  meson configure -Db_pgo=use
+  ninja 
+)
+IF %NAME%==onnx (
+  ren lc0.exe lc0-trt.exe
+  meson configure -Ddefault_backend= -Dcudnn_libdirs= -Dgtest=%GTEST%
+  ninja
+  ren lc0.exe lc0-dml.exe
 )
 cd ..
-IF %PGO%==true msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=PGOptimize /p:DebugInformationFormat=ProgramDatabase /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-IF %NAME%==onnx (
-  ren build\lc0.exe lc0-trt.exe
-  meson configure build -Ddefault_backend= -Dcudnn_libdirs=
-  IF %PGO%==true msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=PGOptimize /p:DebugInformationFormat=ProgramDatabase /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-  IF %PGO%==false msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=true /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-  IF %PGO%==true msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=PGOptimize /p:DebugInformationFormat=ProgramDatabase /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-  IF %PGO%==false msbuild "C:\projects\lc0\build\lc0.sln" /m /p:WholeProgramOptimization=true /logger:"C:\Program Files\AppVeyor\BuildAgent\Appveyor.MSBuildLogger.dll"
-  ren build\lc0.exe lc0-dml.exe
-)
