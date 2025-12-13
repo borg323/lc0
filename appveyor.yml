@@ -5,16 +5,16 @@ image:
 - Visual Studio 2019
 environment:
   matrix:
-  - NAME: gpu-nvidia-cudnn
-  - NAME: gpu-nvidia-cuda12
+#  - NAME: gpu-nvidia-cudnn
+#  - NAME: gpu-nvidia-cuda12
 #  - NAME: gpu-dx12
 #  - NAME: gpu-opencl
-  - NAME: cpu-dnnl
-  - NAME: cpu-openblas
+#  - NAME: cpu-dnnl
+#  - NAME: cpu-openblas
 #  - NAME: onednn
   - NAME: onnx
-  - NAME: android
-  - NAME: gpu-nvidia-cuda11
+#  - NAME: android
+#  - NAME: gpu-nvidia-cuda11
 for:
 -
   matrix:
@@ -93,7 +93,7 @@ install:
 - cmd: IF %CUDA%==true set PATH=%CUDA_PATH%\bin;%PATH%
 - cmd: IF %ONNX%==true set PATH=%CUDA_PATH%\bin;%PATH%
 - cmd: set PATH=C:\Python310;C:\Python310\scripts;%PATH%
-#- cmd: pip3 install --upgrade meson==0.55.3
+- cmd: pip3 install meson==0.57.0
 - cmd: set MIMALLOC_PATH=C:\cache\mimalloc-1.8.7
 - cmd: IF %ANDROID%==false IF NOT EXIST "%MIMALLOC_PATH%" appveyor DownloadFile https://github.com/microsoft/mimalloc/archive/refs/tags/v1.8.7.zip
 - cmd: IF %ANDROID%==false IF NOT EXIST "%MIMALLOC_PATH%" 7z x v1.8.7.zip -oC:\cache\
