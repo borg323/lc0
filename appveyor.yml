@@ -97,7 +97,7 @@ install:
 - cmd: set MIMALLOC_PATH=C:\cache\mimalloc-1.8.7
 - cmd: IF %ANDROID%==false IF NOT EXIST "%MIMALLOC_PATH%" appveyor DownloadFile https://github.com/microsoft/mimalloc/archive/refs/tags/v1.8.7.zip
 - cmd: IF %ANDROID%==false IF NOT EXIST "%MIMALLOC_PATH%" 7z x v1.8.7.zip -oC:\cache\
-- cmd: IF %ANDROID%==false IF NOT EXIST "%MIMALLOC_PATH%"\out msbuild "%MIMALLOC_PATH%"\ide\vs2019\mimalloc-override.vcxproj /p:Configuration=Release /m
+- cmd: IF %ANDROID%==false msbuild "%MIMALLOC_PATH%"\ide\vs2019\mimalloc-override.vcxproj /p:Configuration=Release /m
 - cmd: IF %NAME%==android IF NOT EXIST C:\ndk\android-ndk-r27c\toolchains\llvm\prebuilt\windows-x86_64 appveyor DownloadFile https://dl.google.com/android/repository/android-ndk-r27c-windows.zip
 - cmd: IF %NAME%==android IF NOT EXIST C:\ndk\android-ndk-r27c\toolchains\llvm\prebuilt\windows-x86_64 7z x android-ndk-r27c-windows.zip -oC:\ndk
 - cmd: IF %NAME%==android set PATH=C:\ndk\android-ndk-r27c\toolchains\llvm\prebuilt\windows-x86_64\bin;%PATH%
