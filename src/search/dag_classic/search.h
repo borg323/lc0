@@ -49,6 +49,136 @@
 namespace lczero {
 namespace dag_classic {
 
+// Transposition Table type for holding references to all low nodes in DAG.
+class TranspositionTable {
+ public:
+  virtual ~TranspositionTable() = default;
+
+  virtual void Clear() = 0;
+
+  virtual void SetCapacity([[maybe_unused]] int size_in_mb) = 0;
+
+  virtual size_t GetMemSize() = 0;
+
+  virtual float GetLoadFactor() = 0;
+
+  virtual void Cleanup() = 0;
+
+  virtual std::shared_ptr<LowNode> Lookup(uint64_t hash) = 0;
+
+  virtual std::shared_ptr<LowNode> TryInsert(
+      uint64_t hash, const std::shared_ptr<LowNode> low_node) = 0;
+};
+
+class FixedTranspositionTable : public TranspositionTable {
+ public:
+  void Clear() override { tt_.Clear(); }
+
+  void SetCapacity([[maybe_unused]] int size_in_mb) override {
+    // Transposition table size.
+    tt_.SetCapacity(size_in_mb * 1000000 / tt_.GetItemStructSize());
+  }
+
+  size_t GetMemSize() override {
+    return tt_.GetCapacity() * tt_.GetItemStructSize();
+  }
+
+  float GetLoadFactor() override {
+    return tt_.GetSize() / static_cast<float>(tt_.GetCapacity());
+  }
+
+  void Cleanup() override {}
+
+  std::shared_ptr<LowNode> Lookup(uint64_t hash) override {
+    auto entry = tt_.LookupAndPin(hash);
+    if (entry) {
+      auto low_node = entry->lock();
+      tt_.Unpin(hash, entry);
+      return low_node;
+    }
+    return {};
+  }
+
+  std::shared_ptr<LowNode> TryInsert(
+      uint64_t hash, const std::shared_ptr<LowNode> low_node) override {
+    auto entry = tt_.LookupAndPin(hash);
+    if (!entry) {
+      bool insert_ok =
+          tt_.Insert(hash, std::make_unique<std::weak_ptr<LowNode>>(low_node));
+      if (!insert_ok) {
+        // The insert may fail if another thread added the same hash.
+        // In the unlikely case it fails, the search will still work OK.
+        entry = tt_.LookupAndPin(hash);
+      }
+    }
+    bool is_tt_miss = !entry;
+    if (!is_tt_miss) {
+      auto tt_low_node = entry->lock();
+      if (!tt_low_node) {
+        // An insert would fail, so update the (expired) entry directly.
+        *entry = low_node;
+        tt_.Unpin(hash, entry);
+        return low_node;
+      } else {
+        tt_.Unpin(hash, entry);
+        return tt_low_node;
+      }
+    }
+    return low_node;
+  }
+
+ private:
+  HashKeyedCache<std::weak_ptr<LowNode>> tt_;
+};
+
+class VariableTranspositionTable : public TranspositionTable {
+ public:
+  void Clear() override { tt_.clear(); }
+
+  void SetCapacity([[maybe_unused]] int size_in_mb) override {}
+
+  size_t GetMemSize() override {
+    return (sizeof(absl::flat_hash_map<uint64_t,
+                                       std::weak_ptr<LowNode>>::value_type) +
+            1) *
+           tt_.bucket_count();
+  }
+
+  float GetLoadFactor() override { return 0; }
+
+  void Cleanup() override {
+    absl::erase_if(tt_, [](const auto& item) { return item.second.expired(); });
+  }
+
+  std::shared_ptr<LowNode> Lookup(uint64_t hash) override {
+    auto tt_iter = tt_.find(hash);
+    // Transposition table entry might be expired.
+    if (tt_iter != tt_.end()) {
+      return tt_iter->second.lock();
+    }
+    return {};
+  }
+
+  std::shared_ptr<LowNode> TryInsert(
+      uint64_t hash, const std::shared_ptr<LowNode> low_node) override {
+    auto [tt_iter, is_tt_miss] = tt_.try_emplace(hash, low_node);
+    if (!is_tt_miss) {
+      auto tt_low_node = tt_iter->second.lock();
+      if (!tt_low_node) {
+        tt_iter->second = low_node;
+        return low_node;
+      } else {
+        assert(!tt_iter->second.expired());
+        return tt_low_node;
+      }
+    }
+    return low_node;
+  }
+
+ private:
+  absl::flat_hash_map<uint64_t, std::weak_ptr<LowNode>> tt_;
+};
+
 // The tuple elements are (node, repetitons, moves left).
 typedef std::vector<std::tuple<Node*, int, int>> BackupPath;
 
