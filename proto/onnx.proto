@@ -162,4 +162,5 @@ message ModelProto {
   optional string doc_string = 6;
   optional GraphProto graph = 7;
   repeated OperatorSetIdProto opset_import = 8;
+  repeated StringStringEntryProto metadata_props = 14;
 }

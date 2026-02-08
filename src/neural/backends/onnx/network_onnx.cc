@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -46,6 +47,7 @@
 
 #include "neural/factory.h"
 #include "neural/loader.h"
+#include "proto/onnx.pb.h"
 #include "neural/network.h"
 #include "neural/onnx/converter.h"
 #include "onnxruntime_cxx_api.h"
@@ -653,6 +655,10 @@ Ort::SessionOptions OnnxNetwork::GetOptions(int threads, int batch_size,
       provider_options["ModelFormat"] = "MLProgram";
       provider_options["ProfileComputePlan"] = "1";
       provider_options["AllowLowPrecisionAccumulationOnGPU"] = "1";
+      auto cache_dir =
+          std::filesystem::path(CommandLine::BinaryDirectory()) / "coreml_cache";
+      std::filesystem::create_directories(cache_dir);
+      provider_options["ModelCacheDirectory"] = cache_dir.string();
       options.AppendExecutionProvider("CoreML", provider_options);
       break;
     }
@@ -864,7 +870,7 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
     outputs_.emplace_back(md.output_mlh());
   }
   uint64_t hash = 0;
-  if (provider == OnnxProvider::TRT) {
+  if (provider == OnnxProvider::TRT || provider == OnnxProvider::COREML) {
     hash = std::hash<std::string_view>()(md.model());
   }
   switch (provider) {
@@ -883,10 +889,30 @@ OnnxNetwork::OnnxNetwork(const WeightsFile& file, const OptionsDict& opts,
       break;
   }
 
-  for (int step = 1; step <= steps_; step++)
-    session_.emplace_back(onnx_env_, file.onnx_model().model().data(),
-                          file.onnx_model().model().size(),
-                          GetOptions(threads, batch_size_ * step, hash));
+  for (int step = 1; step <= steps_; step++) {
+    auto t0 = std::chrono::steady_clock::now();
+    if (provider == OnnxProvider::COREML) {
+      pblczero::ModelProto model_proto;
+      model_proto.ParseFromString(md.model());
+      auto* entry = model_proto.add_metadata_props();
+      entry->set_key("COREML_CACHE_KEY");
+      std::ostringstream oss;
+      oss << std::hex << hash << "b" << std::dec << (batch_size_ * step);
+      entry->set_value(oss.str());
+      std::string patched = model_proto.OutputAsString();
+      session_.emplace_back(onnx_env_, patched.data(), patched.size(),
+                            GetOptions(threads, batch_size_ * step, hash));
+    } else {
+      session_.emplace_back(onnx_env_, file.onnx_model().model().data(),
+                            file.onnx_model().model().size(),
+                            GetOptions(threads, batch_size_ * step, hash));
+    }
+    auto dt = std::chrono::steady_clock::now() - t0;
+    CERR << "Session " << step << "/" << steps_
+         << " (batch=" << (batch_size_ * step) << ") created in "
+         << std::chrono::duration_cast<std::chrono::milliseconds>(dt).count()
+         << " ms.";
+  }
 }
 
 template <OnnxProvider kProvider>
