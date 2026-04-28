@@ -38,6 +38,7 @@
 
 #include "neural/encoder.h"
 #include "search/classic/node.h"
+#include "search/classic/search_tree.h"
 #include "utils/fastmath.h"
 #include "utils/random.h"
 #include "utils/spinhelper.h"
@@ -170,6 +171,7 @@ Search::Search(const NodeTree& tree, Backend* backend,
           searchmoves_, syzygy_tb_, played_history_,
           params_.GetSyzygyFastPlay(), &tb_hits_, &root_is_in_dtz_)),
       uci_responder_(std::move(uci_responder)) {
+  search_tree_ = std::make_unique<SearchTree>(root_node_);
   if (params_.GetMaxConcurrentSearchers() != 0) {
     pending_searchers_.store(params_.GetMaxConcurrentSearchers(),
                              std::memory_order_release);
@@ -1062,13 +1064,7 @@ void Search::Wait() {
 }
 
 void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
-  for (auto& entry : shared_collisions_) {
-    auto path = entry.first;
-    for (auto it = ++(path.crbegin()); it != path.crend(); ++it) {
-      (*it)->CancelScoreUpdate(entry.second);
-    }
-  }
-  shared_collisions_.clear();
+  search_tree_->CancelSharedCollisions();
 }
 
 Search::~Search() {
@@ -2024,8 +2020,8 @@ void SearchWorker::CollectCollisions() {
 
   for (const NodeToProcess& node_to_process : minibatch_) {
     if (node_to_process.IsCollision()) {
-      search_->shared_collisions_.emplace_back(node_to_process.path,
-                                               node_to_process.multivisit);
+      search_->search_tree_->AddSharedCollision(node_to_process.path,
+                                                node_to_process.multivisit);
     }
   }
 }

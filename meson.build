@@ -162,6 +162,7 @@ common_files += [
   'src/neural/shared_params.cc',
   'src/neural/wrapper.cc',
   'src/search/classic/node.cc',
+  'src/search/classic/search_tree.cc',
   'src/syzygy/syzygy.cc',
   'src/trainingdata/reader.cc',
   'src/trainingdata/trainingdata.cc',
