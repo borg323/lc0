@@ -235,7 +235,7 @@ std::string Node::DebugString() const {
   oss << " Term:" << static_cast<int>(terminal_type_) << " This:" << this
       << " Parent:" << parent_ << " Index:" << index_
       << " Child:" << child_.get() << " Sibling:" << sibling_.get()
-      << " WL:" << wl_ << " N:" << n_ << " N_:" << n_in_flight_
+      << " WL:" << wl_ << " N:" << n_
       << " Edges:" << static_cast<int>(num_edges_)
       << " Bounds:" << static_cast<int>(lower_bound_) - 2 << ","
       << static_cast<int>(upper_bound_) - 2 << " Solid:" << solid_children_;
@@ -244,28 +244,11 @@ std::string Node::DebugString() const {
 
 bool Node::MakeSolid() {
   if (solid_children_ || num_edges_ == 0 || IsTerminal()) return false;
-  // Can only make solid if no immediate leaf children are in flight since we
-  // allow the search code to hold references to leaf nodes across locks.
-  Node* old_child_to_check = child_.get();
-  uint32_t total_in_flight = 0;
-  while (old_child_to_check != nullptr) {
-    if (old_child_to_check->GetN() <= 1 &&
-        old_child_to_check->GetNInFlight() > 0) {
-      return false;
-    }
-    if (old_child_to_check->IsTerminal() &&
-        old_child_to_check->GetNInFlight() > 0) {
-      return false;
-    }
-    total_in_flight += old_child_to_check->GetNInFlight();
-    old_child_to_check = old_child_to_check->sibling_.get();
-  }
-  // If the total of children in flight is not the same as self, then there are
-  // collisions against immediate children (which don't update the GetNInFlight
-  // of the leaf) and its not safe.
-  if (total_in_flight != GetNInFlight()) {
-    return false;
-  }
+  // MakeSolid is currently disabled in the backup path (#if 0 block in
+  // DoBackupUpdateSingleNode). It should only be called when no active search
+  // is in progress (i.e., no thread holds nodes_mutex_ for selection/backup),
+  // ensuring no SearchTree n_in_flight counts are outstanding.  When that
+  // invariant holds the previous n_in_flight safety checks are unnecessary.
   std::allocator<Node> alloc;
   auto* new_children = alloc.allocate(num_edges_);
   for (int i = 0; i < num_edges_; i++) {
@@ -345,14 +328,6 @@ void Node::SetBounds(GameResult lower, GameResult upper) {
   upper_bound_ = upper;
 }
 
-bool Node::TryStartScoreUpdate() {
-  if (n_ == 0 && n_in_flight_ > 0) return false;
-  ++n_in_flight_;
-  return true;
-}
-
-void Node::CancelScoreUpdate(int multivisit) { n_in_flight_ -= multivisit; }
-
 void Node::FinalizeScoreUpdate(float v, float d, float m, int multivisit) {
   // Recompute Q.
   wl_ += multivisit * (v - wl_) / (n_ + multivisit);
@@ -361,8 +336,7 @@ void Node::FinalizeScoreUpdate(float v, float d, float m, int multivisit) {
 
   // Increment N.
   n_ += multivisit;
-  // Decrement virtual loss.
-  n_in_flight_ -= multivisit;
+  // n_in_flight is now tracked by SearchTree; no decrement here.
 }
 
 void Node::AdjustForTerminal(float v, float d, float m, int multivisit) {
