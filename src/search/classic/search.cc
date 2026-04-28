@@ -38,6 +38,7 @@
 
 #include "neural/encoder.h"
 #include "search/classic/node.h"
+#include "search/classic/search_tree.h"
 #include "utils/fastmath.h"
 #include "utils/random.h"
 #include "utils/spinhelper.h"
@@ -170,6 +171,7 @@ Search::Search(const NodeTree& tree, Backend* backend,
           searchmoves_, syzygy_tb_, played_history_,
           params_.GetSyzygyFastPlay(), &tb_hits_, &root_is_in_dtz_)),
       uci_responder_(std::move(uci_responder)) {
+  search_tree_ = std::make_unique<SearchTree>(root_node_);
   if (params_.GetMaxConcurrentSearchers() != 0) {
     pending_searchers_.store(params_.GetMaxConcurrentSearchers(),
                              std::memory_order_release);
@@ -468,8 +470,9 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
   std::vector<std::tuple<uint32_t, float, EdgeAndNode>> edges;
   edges.reserve(node->GetNumEdges());
   for (const auto& edge : node->Edges()) {
+    const int nstarted = search_tree_->GetNStarted(edge.node());
     edges.emplace_back(edge.GetN(),
-                       edge.GetQ(fpu, draw_score) + edge.GetU(U_coeff),
+                       edge.GetQ(fpu, draw_score) + edge.GetU(U_coeff, nstarted),
                        edge);
   }
   std::sort(edges.begin(), edges.end());
@@ -550,13 +553,15 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
     float M = m_evaluator.GetMUtility(edge, Q);
     std::ostringstream oss;
     oss << std::left;
+    const int edge_nstarted = search_tree_->GetNStarted(edge.node());
+    const uint32_t edge_ninflight = search_tree_->GetNInFlight(edge.node());
     // TODO: should this be displaying transformed index?
     print_head(&oss, edge.GetMove(is_black_to_move).ToString(true),
                MoveToNNIndex(edge.GetMove(), 0), edge.GetN(),
-               edge.GetNInFlight(), edge.GetP());
+               edge_ninflight, edge.GetP());
     print_stats(&oss, edge.node());
-    print(&oss, "(U: ", edge.GetU(U_coeff), ") ", 6, 5);
-    print(&oss, "(S: ", Q + edge.GetU(U_coeff) + M, ") ", 8, 5);
+    print(&oss, "(U: ", edge.GetU(U_coeff, edge_nstarted), ") ", 6, 5);
+    print(&oss, "(S: ", Q + edge.GetU(U_coeff, edge_nstarted) + M, ") ", 8, 5);
     print_tail(&oss, edge.node());
     infos.emplace_back(oss.str());
   }
@@ -564,7 +569,7 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
   // Include stats about the node in similar format to its children above.
   std::ostringstream oss;
   print_head(&oss, "node ", node->GetNumEdges(), node->GetN(),
-             node->GetNInFlight(), node->GetVisitedPolicy());
+             search_tree_->GetNInFlight(node), node->GetVisitedPolicy());
   print_stats(&oss, node);
   print_tail(&oss, node);
   infos.emplace_back(oss.str());
@@ -1062,13 +1067,7 @@ void Search::Wait() {
 }
 
 void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
-  for (auto& entry : shared_collisions_) {
-    auto path = entry.first;
-    for (auto it = ++(path.crbegin()); it != path.crend(); ++it) {
-      (*it)->CancelScoreUpdate(entry.second);
-    }
-  }
-  shared_collisions_.clear();
+  search_tree_->CancelSharedCollisions();
 }
 
 Search::~Search() {
@@ -1393,7 +1392,8 @@ void SearchWorker::GatherMinibatch() {
         if (minibatch_[i].IsCollision()) {
           for (auto it = ++(minibatch_[i].path.crbegin());
                it != minibatch_[i].path.crend(); ++it) {
-            (*it)->CancelScoreUpdate(minibatch_[i].multivisit);
+            search_->search_tree_->CancelScoreUpdate(*it,
+                                                     minibatch_[i].multivisit);
           }
           minibatch_.erase(minibatch_.begin() + i);
         } else if (minibatch_[i].ooo_completed) {
@@ -1419,7 +1419,7 @@ void SearchWorker::GatherMinibatch() {
           picked_node.multivisit += extra;
           for (auto it = ++(picked_node.path.crbegin());
                it != picked_node.path.crend(); ++it) {
-            (*it)->IncrementNInFlight(extra);
+            search_->search_tree_->IncrementNInFlight(*it, extra);
           }
         }
         if ((collisions_left -= picked_node.multivisit) <= 0) return;
@@ -1628,7 +1628,7 @@ void SearchWorker::PickNodesToExtendTask(
           // Root node is special - since its not reached from anywhere else, so
           // it needs its own logic. Still need to create the collision to
           // ensure the outer gather loop gives up.
-          if (node->TryStartScoreUpdate()) {
+          if (search_->search_tree_->TryStartScoreUpdate(node)) {
             cur_limit -= 1;
             minibatch_.push_back(NodeToProcess::Visit(
                 full_path,
@@ -1657,7 +1657,7 @@ void SearchWorker::PickNodesToExtendTask(
       if (is_root_node) {
         // Root node is again special - needs its n in flight updated separately
         // as its not handled on the path to it, since there isn't one.
-        node->IncrementNInFlight(cur_limit);
+        search_->search_tree_->IncrementNInFlight(node, cur_limit);
       }
 
       // Create visits_to_perform new back entry for this level.
@@ -1682,7 +1682,9 @@ void SearchWorker::PickNodesToExtendTask(
       // node to stay at 64 bytes).
       int max_needed = node->GetNumEdges();
       if (!is_root_node || root_move_filter.empty()) {
-        max_needed = std::min(max_needed, node->GetNStarted() + cur_limit + 2);
+        max_needed = std::min(
+            max_needed,
+            search_->search_tree_->GetNStarted(node) + cur_limit + 2);
       }
       node->CopyPolicy(max_needed, current_pol.data());
       for (int i = 0; i < max_needed; i++) {
@@ -1729,7 +1731,8 @@ void SearchWorker::PickNodesToExtendTask(
               cur_iters[idx] = cur_iters[idx - 1];
               ++cur_iters[idx];
             }
-            current_nstarted[idx] = cur_iters[idx].GetNStarted();
+            current_nstarted[idx] =
+                search_->search_tree_->GetNStarted(cur_iters[idx].node());
           }
           int nstarted = current_nstarted[idx];
           const float util = current_util[idx];
@@ -1811,12 +1814,12 @@ void SearchWorker::PickNodesToExtendTask(
             full_path, current_path.size() + base_depth + 1 - 1);
 
         bool decremented = false;
-        if (child_node->TryStartScoreUpdate()) {
+        if (search_->search_tree_->TryStartScoreUpdate(child_node)) {
           current_nstarted[best_idx]++;
           new_visits -= 1;
           decremented = true;
           if (child_node->GetN() > 0 && !child_node->IsTerminal()) {
-            child_node->IncrementNInFlight(new_visits);
+            search_->search_tree_->IncrementNInFlight(child_node, new_visits);
             current_nstarted[best_idx] += new_visits;
           }
           current_score[best_idx] = current_pol[best_idx] * puct_mult /
@@ -2024,8 +2027,8 @@ void SearchWorker::CollectCollisions() {
 
   for (const NodeToProcess& node_to_process : minibatch_) {
     if (node_to_process.IsCollision()) {
-      search_->shared_collisions_.emplace_back(node_to_process.path,
-                                               node_to_process.multivisit);
+      search_->search_tree_->AddSharedCollision(node_to_process.path,
+                                                node_to_process.multivisit);
     }
   }
 }
@@ -2055,7 +2058,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   if (budget <= 0) return 0;
 
   // We are in a leaf, which is not yet being processed.
-  if (!node || node->GetNStarted() == 0) {
+  if (!node || search_->search_tree_->GetNStarted(node) == 0) {
     if (search_->backend_->GetCachedEvaluation(
             EvalPosition{history_.GetPositions(), {}})) {
       // Make it return 0 to make it not use the slot, so that the function
@@ -2071,7 +2074,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   }
 
   assert(node);
-  // n = 0 and n_in_flight_ > 0, that means the node is being extended.
+  // n = 0 and n_in_flight > 0 means the node is being extended.
   if (node->GetN() == 0) return 0;
   // The node is terminal; don't prefetch it.
   if (node->IsTerminal()) return 0;
@@ -2087,10 +2090,11 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
       GetFpu(params_, node, node == search_->root_node_, draw_score);
   for (auto& edge : node->Edges()) {
     if (edge.GetP() == 0.0f) continue;
+    const int nstarted = search_->search_tree_->GetNStarted(edge.node());
     // Flip the sign of a score to be able to easily sort.
     // TODO: should this use logit_q if set??
-    scores.emplace_back(-edge.GetU(puct_mult) - edge.GetQ(fpu, draw_score),
-                        edge);
+    scores.emplace_back(
+        -edge.GetU(puct_mult, nstarted) - edge.GetQ(fpu, draw_score), edge);
   }
 
   size_t first_unsorted_index = 0;
@@ -2123,9 +2127,11 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
       // TODO: As above - should this use logit_q if set?
       const float q = edge.GetQ(-fpu, draw_score);
       if (next_score > q) {
+        const int edge_nstarted =
+            search_->search_tree_->GetNStarted(edge.node());
         budget_to_spend =
             std::min(budget, int(edge.GetP() * puct_mult / (next_score - q) -
-                                 edge.GetNStarted()) +
+                                 edge_nstarted) +
                                  1);
       } else {
         budget_to_spend = budget;
@@ -2249,6 +2255,8 @@ void SearchWorker::DoBackupUpdateSingleNode(
       m = n->GetM();
     }
     n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
+    // n_in_flight is now tracked by SearchTree; decrement it here.
+    search_->search_tree_->FinalizeScoreUpdate(n, node_to_process.multivisit);
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }

@@ -161,10 +161,7 @@ class Node {
   // Returns sum of policy priors which have had at least one playout.
   float GetVisitedPolicy() const;
   uint32_t GetN() const { return n_; }
-  uint32_t GetNInFlight() const { return n_in_flight_; }
   uint32_t GetChildrenVisits() const { return n_ > 0 ? n_ - 1 : 0; }
-  // Returns n = n_if_flight.
-  int GetNStarted() const { return n_ + n_in_flight_; }
   float GetQ(float draw_score) const { return wl_ + draw_score * d_; }
   // Returns node eval, i.e. average subtree V for non-terminal node and -1/0/1
   // for terminal nodes.
@@ -196,27 +193,16 @@ class Node {
   void MakeNotTerminal();
   void SetBounds(GameResult lower, GameResult upper);
 
-  // If this node is not in the process of being expanded by another thread
-  // (which can happen only if n==0 and n-in-flight==1), mark the node as
-  // "being updated" by incrementing n-in-flight, and return true.
-  // Otherwise return false.
-  bool TryStartScoreUpdate();
-  // Decrements n-in-flight back.
-  void CancelScoreUpdate(int multivisit);
   // Updates the node with newly computed value v.
   // Updates:
   // * Q (weighted average of all V in a subtree)
-  // * N (+=1)
-  // * N-in-flight (-=1)
+  // * N (+=multivisit)
+  // Note: n_in_flight accounting is handled by SearchTree, not here.
   void FinalizeScoreUpdate(float v, float d, float m, int multivisit);
   // Like FinalizeScoreUpdate, but it updates n existing visits by delta amount.
   void AdjustForTerminal(float v, float d, float m, int multivisit);
   // Revert visits to a node which ended in a now reverted terminal.
   void RevertTerminalVisits(float v, float d, float m, int multivisit);
-  // When search decides to treat one visit as several (in case of collisions
-  // or visiting terminal nodes several times), it amplifies the visit by
-  // incrementing n_in_flight.
-  void IncrementNInFlight(int multivisit) { n_in_flight_ += multivisit; }
 
   // Updates max depth, if new depth is larger.
   void UpdateMaxDepth(int depth);
@@ -307,10 +293,6 @@ class Node {
   float m_ = 0.0f;
   // How many completed visits this node had.
   uint32_t n_ = 0;
-  // (AKA virtual loss.) How many threads currently process this node (started
-  // but not finished). This value is added to n during selection which node
-  // to pick in MCTS, and also when selecting the best move.
-  uint32_t n_in_flight_ = 0;
 
   // 2 byte fields.
   // Index of this node is parent's edge list.
@@ -348,9 +330,9 @@ class Node {
 
 // A basic sanity check. This must be adjusted when Node members are adjusted.
 #if defined(__i386__) || (defined(__arm__) && !defined(__aarch64__))
-static_assert(sizeof(Node) == 48, "Unexpected size of Node for 32bit compile");
+static_assert(sizeof(Node) == 44, "Unexpected size of Node for 32bit compile");
 #else
-static_assert(sizeof(Node) == 64, "Unexpected size of Node");
+static_assert(sizeof(Node) == 56, "Unexpected size of Node");
 #endif
 
 // Contains Edge and Node pair and set of proxy functions to simplify access
@@ -386,8 +368,6 @@ class EdgeAndNode {
   }
   // N-related getters, from Node (if exists).
   uint32_t GetN() const { return node_ ? node_->GetN() : 0; }
-  int GetNStarted() const { return node_ ? node_->GetNStarted() : 0; }
-  uint32_t GetNInFlight() const { return node_ ? node_->GetNInFlight() : 0; }
 
   // Whether the node is known to be terminal.
   bool IsTerminal() const { return node_ ? node_->IsTerminal() : false; }
@@ -403,10 +383,11 @@ class EdgeAndNode {
     return edge_ ? edge_->GetMove(flip) : Move();
   }
 
-  // Returns U = numerator * p / N.
+  // Returns U = numerator * p / (1 + nstarted).
+  // @nstarted must be pre-computed as node->GetN() + search_tree.GetNInFlight(node).
   // Passed numerator is expected to be equal to (cpuct * sqrt(N[parent])).
-  float GetU(float numerator) const {
-    return numerator * GetP() / (1 + GetNStarted());
+  float GetU(float numerator, int nstarted) const {
+    return numerator * GetP() / (1 + nstarted);
   }
 
   std::string DebugString() const;
@@ -583,14 +564,10 @@ class VisitedNode_Iterator {
     if (solid_) {
       while (++current_idx_ != total_count_ &&
              node_ptr_[current_idx_].GetN() == 0) {
-        if (node_ptr_[current_idx_].GetNInFlight() == 0) {
-          // Once there is not even n in flight, we can skip to the end. This is
-          // due to policy being in sorted order meaning that additional n in
-          // flight are always selected from the front of the section with no n
-          // in flight or visited.
-          current_idx_ = total_count_;
-          break;
-        }
+        // Once there is an N=0 entry, all remaining entries are also unvisited
+        // (due to sorted policy). Jump to the end.
+        current_idx_ = total_count_;
+        break;
       }
       if (current_idx_ == total_count_) {
         node_ptr_ = nullptr;
@@ -598,12 +575,10 @@ class VisitedNode_Iterator {
     } else {
       do {
         node_ptr_ = node_ptr_->sibling_.get();
-        // If n started is 0, can jump direct to end due to sorted policy
-        // ensuring that each time a new edge becomes best for the first time,
-        // it is always the first of the section at the end that has NStarted of
-        // 0.
-        if (node_ptr_ != nullptr && node_ptr_->GetN() == 0 &&
-            node_ptr_->GetNInFlight() == 0) {
+        // If N is 0, jump to end: due to sorted policy, once the first
+        // unvisited (N=0) node is encountered, all subsequent nodes are also
+        // unvisited.
+        if (node_ptr_ != nullptr && node_ptr_->GetN() == 0) {
           node_ptr_ = nullptr;
           break;
         }

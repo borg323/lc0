@@ -39,6 +39,7 @@
 #include "neural/backend.h"
 #include "search/classic/node.h"
 #include "search/classic/params.h"
+#include "search/classic/search_tree.h"
 #include "search/classic/stoppers/timemgr.h"
 #include "syzygy/syzygy.h"
 #include "utils/logging.h"
@@ -194,8 +195,9 @@ class Search {
   std::atomic<int> backend_waiting_counter_{0};
   std::atomic<int> thread_count_{0};
 
-  std::vector<std::pair<const std::vector<Node*>, int>> shared_collisions_
-      GUARDED_BY(nodes_mutex_);
+  // Search-local overlay: owns collision bookkeeping and (in a later commit)
+  // per-node virtual-loss accounting.
+  std::unique_ptr<SearchTree> search_tree_ GUARDED_BY(nodes_mutex_);
 
   std::unique_ptr<UciResponder> uci_responder_;
   ContemptMode contempt_mode_;
