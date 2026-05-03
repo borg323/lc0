@@ -1701,7 +1701,8 @@ void SearchWorker::PickNodesToExtendTask(
                                    : even_draw_score;
       m_evaluator.SetParent(node);
       float visited_pol = 0.0f;
-      for (Node* child : node->VisitedNodes()) {
+      for (Node* child : node->Nodes()) {
+        if (child->GetNStarted() == 0) break;
         int index = child->Index();
         visited_pol += current_pol[index];
         float q = child->GetQ(draw_score);

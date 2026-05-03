@@ -122,7 +122,7 @@ template <bool is_const>
 class Edge_Iterator;
 
 template <bool is_const>
-class VisitedNode_Iterator;
+class Node_Iterator;
 
 class Node {
  public:
@@ -230,8 +230,8 @@ class Node {
   Iterator Edges();
 
   // Returns range for iterating over child nodes with N > 0.
-  VisitedNode_Iterator<true> VisitedNodes() const;
-  VisitedNode_Iterator<false> VisitedNodes();
+  Node_Iterator<true> Nodes() const;
+  Node_Iterator<false> Nodes();
 
   // Deletes all children.
   void ReleaseChildren();
@@ -334,8 +334,8 @@ class Node {
   friend class Edge_Iterator<true>;
   friend class Edge_Iterator<false>;
   friend class Edge;
-  friend class VisitedNode_Iterator<true>;
-  friend class VisitedNode_Iterator<false>;
+  friend class Node_Iterator<true>;
+  friend class Node_Iterator<false>;
 };
 
 // Define __i386__  or __arm__ also for 32 bit Windows.
@@ -550,64 +550,38 @@ class Edge_Iterator : public EdgeAndNode {
 //
 // All functions are not thread safe (must be externally synchronized).
 template <bool is_const>
-class VisitedNode_Iterator {
+class Node_Iterator {
  public:
   // Creates "end()" iterator.
-  VisitedNode_Iterator() {}
+  Node_Iterator() {}
 
   // Creates "begin()" iterator. Also happens to be a range constructor.
   // child_ptr will be nullptr if parent_node is solid children.
-  VisitedNode_Iterator(const Node& parent_node, Node* child_ptr)
+  Node_Iterator(const Node& parent_node, Node* child_ptr)
       : node_ptr_(child_ptr),
         total_count_(parent_node.num_edges_),
-        solid_(parent_node.solid_children_) {
-    if (node_ptr_ != nullptr && node_ptr_->GetN() == 0) {
-      operator++();
-    }
-  }
+        solid_(parent_node.solid_children_) {}
   // These are technically wrong, but are usable to compare with end().
-  bool operator==(const VisitedNode_Iterator<is_const>& other) const {
+  bool operator==(const Node_Iterator<is_const>& other) const {
     return node_ptr_ == other.node_ptr_;
   }
-  bool operator!=(const VisitedNode_Iterator<is_const>& other) const {
+  bool operator!=(const Node_Iterator<is_const>& other) const {
     return node_ptr_ != other.node_ptr_;
   }
 
   // Function to support range interface.
-  VisitedNode_Iterator<is_const> begin() { return *this; }
-  VisitedNode_Iterator<is_const> end() { return {}; }
+  Node_Iterator<is_const> begin() { return *this; }
+  Node_Iterator<is_const> end() { return {}; }
 
   // Functions to support iterator interface.
   // Equality comparison operators are inherited from EdgeAndNode.
   void operator++() {
     if (solid_) {
-      while (++current_idx_ != total_count_ &&
-             node_ptr_[current_idx_].GetN() == 0) {
-        if (node_ptr_[current_idx_].GetNInFlight() == 0) {
-          // Once there is not even n in flight, we can skip to the end. This is
-          // due to policy being in sorted order meaning that additional n in
-          // flight are always selected from the front of the section with no n
-          // in flight or visited.
-          current_idx_ = total_count_;
-          break;
-        }
-      }
-      if (current_idx_ == total_count_) {
+      if (++current_idx_ == total_count_) {
         node_ptr_ = nullptr;
       }
     } else {
-      do {
-        node_ptr_ = node_ptr_->sibling_.get();
-        // If n started is 0, can jump direct to end due to sorted policy
-        // ensuring that each time a new edge becomes best for the first time,
-        // it is always the first of the section at the end that has NStarted of
-        // 0.
-        if (node_ptr_ != nullptr && node_ptr_->GetN() == 0 &&
-            node_ptr_->GetNInFlight() == 0) {
-          node_ptr_ = nullptr;
-          break;
-        }
-      } while (node_ptr_ != nullptr && node_ptr_->GetN() == 0);
+      node_ptr_ = node_ptr_->sibling_.get();
     }
   }
   Node* operator*() {
@@ -626,12 +600,8 @@ class VisitedNode_Iterator {
   bool solid_ = false;
 };
 
-inline VisitedNode_Iterator<true> Node::VisitedNodes() const {
-  return {*this, child_.get()};
-}
-inline VisitedNode_Iterator<false> Node::VisitedNodes() {
-  return {*this, child_.get()};
-}
+inline Node_Iterator<true> Node::Nodes() const { return {*this, child_.get()}; }
+inline Node_Iterator<false> Node::Nodes() { return {*this, child_.get()}; }
 
 class NodeTree {
  public:

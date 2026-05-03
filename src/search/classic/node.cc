@@ -218,7 +218,10 @@ Node::Iterator Node::Edges() {
 
 float Node::GetVisitedPolicy() const {
   float sum = 0.0f;
-  for (auto* node : VisitedNodes()) sum += GetEdgeToNode(node)->GetP();
+  for (auto* node : Nodes()) {
+    if (node->GetNStarted() == 0) break;
+    sum += GetEdgeToNode(node)->GetP();
+  }
   return sum;
 }
 
