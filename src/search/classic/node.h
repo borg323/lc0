@@ -254,6 +254,8 @@ class Node {
   // already done. Returns true if the transformation was performed.
   bool MakeSolid();
 
+  bool IsSolid() const { return solid_children_; }
+
   void SortEdges();
 
   // Index in parent edges - useful for correlated ordering.

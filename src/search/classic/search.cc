@@ -2251,8 +2251,32 @@ void SearchWorker::DoBackupUpdateSingleNode(
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }
-    if (n->GetN() >= solid_threshold) {
-      if (n->MakeSolid() && n == search_->root_node_) {
+    if (n->GetN() >= solid_threshold && !n->IsSolid() && !n->IsTerminal()) {
+      // Check that no immediate spawned child is still referenced by any
+      // in-flight visit or collision path.
+      bool can_solidify = true;
+      // Can only make solid if no immediate leaf children are in flight since
+      // we hold references to leaf nodes across locks.
+      uint32_t total_in_flight = 0;
+      for (Node* child : n->Nodes()) {
+        if (child->GetNStarted() == 0) break;
+        if (child->GetN() <= 1 && child->GetNInFlight() > 0) {
+          can_solidify = false;
+          break;
+        }
+        if (child->IsTerminal() && child->GetNInFlight() > 0) {
+          can_solidify = false;
+          break;
+        }
+        total_in_flight += child->GetNInFlight();
+      }
+      // If the total of children in flight is not the same as the node, then
+      // there are collisions against immediate children (which don't update
+      // n_in_flight of the leaf) and its not safe.
+      if (total_in_flight != n->GetNInFlight()) {
+        can_solidify = false;
+      }
+      if (can_solidify && n->MakeSolid() && n == search_->root_node_) {
         // If we make the root solid, the current_best_edge_ becomes invalid and
         // we should repopulate it.
         search_->current_best_edge_ =
