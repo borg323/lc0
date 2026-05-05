@@ -216,15 +216,6 @@ Node::Iterator Node::Edges() {
   return {*this, !solid_children_ ? &child_ : nullptr};
 }
 
-float Node::GetVisitedPolicy() const {
-  float sum = 0.0f;
-  for (auto* node : Nodes()) {
-    if (node->GetNStarted() == 0) break;
-    sum += GetEdgeToNode(node)->GetP();
-  }
-  return sum;
-}
-
 Edge* Node::GetEdgeToNode(const Node* node) const {
   assert(node->parent_ == this);
   assert(node->index_ < num_edges_);
@@ -326,12 +317,6 @@ void Node::SetBounds(GameResult lower, GameResult upper) {
   upper_bound_ = upper;
 }
 
-bool Node::TryStartScoreUpdate() {
-  if (n_ == 0 && n_in_flight_ > 0) return false;
-  ++n_in_flight_;
-  return true;
-}
-
 void Node::CancelScoreUpdate(int multivisit) { n_in_flight_ -= multivisit; }
 
 void Node::FinalizeScoreUpdate(float v, float d, float m, int multivisit) {
@@ -342,8 +327,6 @@ void Node::FinalizeScoreUpdate(float v, float d, float m, int multivisit) {
 
   // Increment N.
   n_ += multivisit;
-  // Decrement virtual loss.
-  n_in_flight_ -= multivisit;
 }
 
 void Node::AdjustForTerminal(float v, float d, float m, int multivisit) {

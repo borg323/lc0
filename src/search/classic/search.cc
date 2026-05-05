@@ -147,6 +147,49 @@ class MEvaluator {
   bool parent_within_threshold_ = false;
 };
 
+void IncrementNInFlight(Node* node, int multivisit) {
+  node->IncrementNInFlight(multivisit);
+}
+
+void DecreaseNInFlight(Node* node, int multivisit) {
+  node->CancelScoreUpdate(multivisit);
+}
+
+uint32_t GetNInFlight(const Node* node) { return node->GetNInFlight(); }
+
+uint32_t GetNInFlight(const EdgeAndNode& e) {
+  return e.HasNode() ? GetNInFlight(e.node()) : 0;
+}
+
+// Returns n + n_if_flight.
+int GetNStarted(const Node* node) { return node->GetN() + GetNInFlight(node); }
+
+int GetNStarted(const EdgeAndNode& e) {
+  return e.HasNode() ? GetNStarted(e.node()) : 0;
+}
+
+bool TryStartScoreUpdate(Node* node) {
+  if (node->GetN() == 0 && GetNInFlight(node) > 0) return false;
+  node->IncrementNInFlight(1);
+  return true;
+}
+
+// Returns sum of policy priors which have had at least one playout.
+float GetVisitedPolicy(const Node* n) {
+  float sum = 0.0f;
+  for (auto* node : n->Nodes()) {
+    if (GetNStarted(node) == 0) break;
+    sum += n->GetEdgeToNode(node)->GetP();
+  }
+  return sum;
+}
+
+// Returns U = numerator * p / N.
+// Passed numerator is expected to be equal to (cpuct * sqrt(N[parent])).
+float GetU(const EdgeAndNode& e, float numerator) {
+  return numerator * e.GetP() / (1 + GetNStarted(e));
+}
+
 }  // namespace
 
 Search::Search(const NodeTree& tree, Backend* backend,
@@ -427,18 +470,18 @@ float Search::GetDrawScore(bool is_odd_depth) const {
 }
 
 namespace {
-inline float GetFpu(const SearchParams& params, const Node* node, bool is_root_node,
-                    float draw_score) {
+inline float GetFpu(const SearchParams& params, const Node* node,
+                    bool is_root_node, float draw_score) {
   const auto value = params.GetFpuValue(is_root_node);
   return params.GetFpuAbsolute(is_root_node)
              ? value
              : -node->GetQ(-draw_score) -
-                   value * std::sqrt(node->GetVisitedPolicy());
+                   value * std::sqrt(GetVisitedPolicy(node));
 }
 
 // Faster version for if visited_policy is readily available already.
-inline float GetFpu(const SearchParams& params, const Node* node, bool is_root_node,
-                    float draw_score, float visited_pol) {
+inline float GetFpu(const SearchParams& params, const Node* node,
+                    bool is_root_node, float draw_score, float visited_pol) {
   const auto value = params.GetFpuValue(is_root_node);
   return params.GetFpuAbsolute(is_root_node)
              ? value
@@ -471,8 +514,7 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
   edges.reserve(node->GetNumEdges());
   for (const auto& edge : node->Edges()) {
     edges.emplace_back(edge.GetN(),
-                       edge.GetQ(fpu, draw_score) + edge.GetU(U_coeff),
-                       edge);
+                       edge.GetQ(fpu, draw_score) + GetU(edge, U_coeff), edge);
   }
   std::sort(edges.begin(), edges.end());
 
@@ -555,10 +597,10 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
     // TODO: should this be displaying transformed index?
     print_head(&oss, edge.GetMove(is_black_to_move).ToString(true),
                MoveToNNIndex(edge.GetMove(), 0), edge.GetN(),
-               edge.GetNInFlight(), edge.GetP());
+               GetNInFlight(edge), edge.GetP());
     print_stats(&oss, edge.node());
-    print(&oss, "(U: ", edge.GetU(U_coeff), ") ", 6, 5);
-    print(&oss, "(S: ", Q + edge.GetU(U_coeff) + M, ") ", 8, 5);
+    print(&oss, "(U: ", GetU(edge, U_coeff), ") ", 6, 5);
+    print(&oss, "(S: ", Q + GetU(edge, U_coeff) + M, ") ", 8, 5);
     print_tail(&oss, edge.node());
     infos.emplace_back(oss.str());
   }
@@ -566,7 +608,7 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
   // Include stats about the node in similar format to its children above.
   std::ostringstream oss;
   print_head(&oss, "node ", node->GetNumEdges(), node->GetN(),
-             node->GetNInFlight(), node->GetVisitedPolicy());
+             GetNInFlight(node), GetVisitedPolicy(node));
   print_stats(&oss, node);
   print_tail(&oss, node);
   infos.emplace_back(oss.str());
@@ -1068,7 +1110,7 @@ void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
     Node* node = entry.first;
     for (node = node->GetParent(); node != root_node_->GetParent();
          node = node->GetParent()) {
-      node->CancelScoreUpdate(entry.second);
+      DecreaseNInFlight(node, entry.second);
     }
   }
   shared_collisions_.clear();
@@ -1403,7 +1445,7 @@ void SearchWorker::GatherMinibatch() {
           for (node = node->GetParent();
                node != search_->root_node_->GetParent();
                node = node->GetParent()) {
-            node->CancelScoreUpdate(minibatch_[i].multivisit);
+            DecreaseNInFlight(node, minibatch_[i].multivisit);
           }
           minibatch_.erase(minibatch_.begin() + i);
         } else if (minibatch_[i].ooo_completed) {
@@ -1432,7 +1474,7 @@ void SearchWorker::GatherMinibatch() {
           for (node = node->GetParent();
                node != search_->root_node_->GetParent();
                node = node->GetParent()) {
-            node->IncrementNInFlight(extra);
+            IncrementNInFlight(node, extra);
           }
         }
         if ((collisions_left -= picked_node.multivisit) <= 0) return;
@@ -1637,7 +1679,7 @@ void SearchWorker::PickNodesToExtendTask(
           // Root node is special - since its not reached from anywhere else, so
           // it needs its own logic. Still need to create the collision to
           // ensure the outer gather loop gives up.
-          if (node->TryStartScoreUpdate()) {
+          if (TryStartScoreUpdate(node)) {
             cur_limit -= 1;
             minibatch_.push_back(NodeToProcess::Visit(
                 node, static_cast<uint16_t>(current_path.size() + base_depth)));
@@ -1663,7 +1705,7 @@ void SearchWorker::PickNodesToExtendTask(
       if (is_root_node) {
         // Root node is again special - needs its n in flight updated separately
         // as its not handled on the path to it, since there isn't one.
-        node->IncrementNInFlight(cur_limit);
+        IncrementNInFlight(node, cur_limit);
       }
 
       // Create visits_to_perform new back entry for this level.
@@ -1688,7 +1730,7 @@ void SearchWorker::PickNodesToExtendTask(
       // node to stay at 64 bytes).
       int max_needed = node->GetNumEdges();
       if (!is_root_node || root_move_filter.empty()) {
-        max_needed = std::min(max_needed, node->GetNStarted() + cur_limit + 2);
+        max_needed = std::min(max_needed, GetNStarted(node) + cur_limit + 2);
       }
       node->CopyPolicy(max_needed, current_pol.data());
       for (int i = 0; i < max_needed; i++) {
@@ -1702,7 +1744,7 @@ void SearchWorker::PickNodesToExtendTask(
       m_evaluator.SetParent(node);
       float visited_pol = 0.0f;
       for (Node* child : node->Nodes()) {
-        if (child->GetNStarted() == 0) break;
+        if (GetNStarted(child) == 0) break;
         int index = child->Index();
         visited_pol += current_pol[index];
         float q = child->GetQ(draw_score);
@@ -1736,7 +1778,7 @@ void SearchWorker::PickNodesToExtendTask(
               cur_iters[idx] = cur_iters[idx - 1];
               ++cur_iters[idx];
             }
-            current_nstarted[idx] = cur_iters[idx].GetNStarted();
+            current_nstarted[idx] = GetNStarted(cur_iters[idx]);
           }
           int nstarted = current_nstarted[idx];
           const float util = current_util[idx];
@@ -1817,12 +1859,12 @@ void SearchWorker::PickNodesToExtendTask(
             child_node, current_path.size() + base_depth + 1 - 1);
 
         bool decremented = false;
-        if (child_node->TryStartScoreUpdate()) {
+        if (TryStartScoreUpdate(child_node)) {
           current_nstarted[best_idx]++;
           new_visits -= 1;
           decremented = true;
           if (child_node->GetN() > 0 && !child_node->IsTerminal()) {
-            child_node->IncrementNInFlight(new_visits);
+            IncrementNInFlight(child_node, new_visits);
             current_nstarted[best_idx] += new_visits;
           }
           current_score[best_idx] = current_pol[best_idx] * puct_mult /
@@ -2055,7 +2097,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   if (budget <= 0) return 0;
 
   // We are in a leaf, which is not yet being processed.
-  if (!node || node->GetNStarted() == 0) {
+  if (!node || GetNStarted(node) == 0) {
     if (search_->backend_->GetCachedEvaluation(
             EvalPosition{history_.GetPositions(), {}})) {
       // Make it return 0 to make it not use the slot, so that the function
@@ -2089,7 +2131,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
     if (edge.GetP() == 0.0f) continue;
     // Flip the sign of a score to be able to easily sort.
     // TODO: should this use logit_q if set??
-    scores.emplace_back(-edge.GetU(puct_mult) - edge.GetQ(fpu, draw_score),
+    scores.emplace_back(-GetU(edge, puct_mult) - edge.GetQ(fpu, draw_score),
                         edge);
   }
 
@@ -2125,7 +2167,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
       if (next_score > q) {
         budget_to_spend =
             std::min(budget, int(edge.GetP() * puct_mult / (next_score - q) -
-                                 edge.GetNStarted()) +
+                                 GetNStarted(edge)) +
                                  1);
       } else {
         budget_to_spend = budget;
@@ -2248,6 +2290,8 @@ void SearchWorker::DoBackupUpdateSingleNode(
       m = n->GetM();
     }
     n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
+    // Decrement virtual loss.
+    DecreaseNInFlight(n, node_to_process.multivisit);
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }
@@ -2259,21 +2303,22 @@ void SearchWorker::DoBackupUpdateSingleNode(
       // we hold references to leaf nodes across locks.
       uint32_t total_in_flight = 0;
       for (Node* child : n->Nodes()) {
-        if (child->GetNStarted() == 0) break;
-        if (child->GetN() <= 1 && child->GetNInFlight() > 0) {
+        if (GetNStarted(child) == 0) break;
+        auto n_in_flight = GetNInFlight(child);
+        if (child->GetN() <= 1 && n_in_flight > 0) {
           can_solidify = false;
           break;
         }
-        if (child->IsTerminal() && child->GetNInFlight() > 0) {
+        if (child->IsTerminal() && n_in_flight > 0) {
           can_solidify = false;
           break;
         }
-        total_in_flight += child->GetNInFlight();
+        total_in_flight += n_in_flight;
       }
       // If the total of children in flight is not the same as the node, then
       // there are collisions against immediate children (which don't update
       // n_in_flight of the leaf) and its not safe.
-      if (total_in_flight != n->GetNInFlight()) {
+      if (total_in_flight != GetNInFlight(n)) {
         can_solidify = false;
       }
       if (can_solidify && n->MakeSolid() && n == search_->root_node_) {
