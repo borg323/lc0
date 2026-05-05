@@ -27,6 +27,8 @@
 
 #pragma once
 
+#include <absl/container/flat_hash_map.h>
+
 #include <array>
 #include <condition_variable>
 #include <functional>
@@ -94,6 +96,9 @@ class Search {
   // from temperature having been applied again.
   void ResetBestMove();
 
+  // Returns sum of policy priors which have had at least one playout.
+  float GetVisitedPolicy(const Node* n) const;
+
  private:
   // Computes the best move, maybe with temperature (according to the settings).
   void EnsureBestMoveKnown();
@@ -135,6 +140,32 @@ class Search {
 
   // Ensure that all shared collisions are cancelled and clear them out.
   void CancelSharedCollisions();
+
+  // When search decides to treat one visit as several (in case of collisions
+  // or visiting terminal nodes several times), it amplifies the visit by
+  // incrementing n_in_flight.
+  void IncrementNInFlight(const Node* node, int multivisit);
+
+  void DecreaseNInFlight(const Node* node, int multivisit);
+
+  uint32_t GetNInFlight(const Node* node) const;
+
+  uint32_t GetNInFlight(const EdgeAndNode& e) const;
+
+  // Returns n + n_if_flight.
+  int GetNStarted(const Node* node) const;
+
+  int GetNStarted(const EdgeAndNode& e) const;
+
+  // If this node is not in the process of being expanded by another thread
+  // (which can happen only if n==0 and n-in-flight==1), mark the node as
+  // "being updated" by incrementing n-in-flight, and return true.
+  // Otherwise return false.
+  bool TryStartScoreUpdate(const Node* node);
+
+  // Returns U = numerator * p / N.
+  // Passed numerator is expected to be equal to (cpuct * sqrt(N[parent])).
+  float GetU(const EdgeAndNode& e, float numerator) const;
 
   PositionHistory GetPositionHistoryAtNode(const Node* node) const;
 
@@ -197,6 +228,12 @@ class Search {
 
   std::vector<std::pair<Node*, int>> shared_collisions_
       GUARDED_BY(nodes_mutex_);
+
+  // (AKA virtual loss.) How many threads currently process this node (started
+  // but not finished). This value is added to n during selection which node
+  // to pick in MCTS, and also when selecting the best move.
+  absl::flat_hash_map<const Node*, uint32_t> n_in_flight_;
+  mutable Mutex n_in_flight_mutex_;
 
   std::unique_ptr<UciResponder> uci_responder_;
   ContemptMode contempt_mode_;

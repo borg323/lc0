@@ -147,49 +147,6 @@ class MEvaluator {
   bool parent_within_threshold_ = false;
 };
 
-void IncrementNInFlight(Node* node, int multivisit) {
-  node->IncrementNInFlight(multivisit);
-}
-
-void DecreaseNInFlight(Node* node, int multivisit) {
-  node->CancelScoreUpdate(multivisit);
-}
-
-uint32_t GetNInFlight(const Node* node) { return node->GetNInFlight(); }
-
-uint32_t GetNInFlight(const EdgeAndNode& e) {
-  return e.HasNode() ? GetNInFlight(e.node()) : 0;
-}
-
-// Returns n + n_if_flight.
-int GetNStarted(const Node* node) { return node->GetN() + GetNInFlight(node); }
-
-int GetNStarted(const EdgeAndNode& e) {
-  return e.HasNode() ? GetNStarted(e.node()) : 0;
-}
-
-bool TryStartScoreUpdate(Node* node) {
-  if (node->GetN() == 0 && GetNInFlight(node) > 0) return false;
-  node->IncrementNInFlight(1);
-  return true;
-}
-
-// Returns sum of policy priors which have had at least one playout.
-float GetVisitedPolicy(const Node* n) {
-  float sum = 0.0f;
-  for (auto* node : n->Nodes()) {
-    if (GetNStarted(node) == 0) break;
-    sum += n->GetEdgeToNode(node)->GetP();
-  }
-  return sum;
-}
-
-// Returns U = numerator * p / N.
-// Passed numerator is expected to be equal to (cpuct * sqrt(N[parent])).
-float GetU(const EdgeAndNode& e, float numerator) {
-  return numerator * e.GetP() / (1 + GetNStarted(e));
-}
-
 }  // namespace
 
 Search::Search(const NodeTree& tree, Backend* backend,
@@ -471,12 +428,12 @@ float Search::GetDrawScore(bool is_odd_depth) const {
 
 namespace {
 inline float GetFpu(const SearchParams& params, const Node* node,
-                    bool is_root_node, float draw_score) {
+                    bool is_root_node, float draw_score, const Search* search) {
   const auto value = params.GetFpuValue(is_root_node);
   return params.GetFpuAbsolute(is_root_node)
              ? value
              : -node->GetQ(-draw_score) -
-                   value * std::sqrt(GetVisitedPolicy(node));
+                   value * std::sqrt(search->GetVisitedPolicy(node));
 }
 
 // Faster version for if visited_policy is readily available already.
@@ -506,7 +463,7 @@ std::vector<std::string> Search::GetVerboseStats(const Node* node) const {
   const bool is_odd_depth = !is_root;
   const bool is_black_to_move = (played_history_.IsBlackToMove() == is_root);
   const float draw_score = GetDrawScore(is_odd_depth);
-  const float fpu = GetFpu(params_, node, is_root, draw_score);
+  const float fpu = GetFpu(params_, node, is_root, draw_score, this);
   const float cpuct = ComputeCpuct(params_, node->GetN(), is_root);
   const float U_coeff =
       cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
@@ -883,7 +840,7 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
   const float offset = params_.GetTemperatureVisitOffset();
   float max_eval = -1.0f;
   const float fpu =
-      GetFpu(params_, root_node_, /* is_root= */ true, draw_score);
+      GetFpu(params_, root_node_, /* is_root= */ true, draw_score, this);
 
   for (auto& edge : root_node_->Edges()) {
     if (!root_move_filter_.empty() &&
@@ -995,7 +952,7 @@ void Search::PopulateCommonIterationStats(IterationStats* stats) {
   if (root_node_->GetN() > 0) {
     const auto draw_score = GetDrawScore(true);
     const float fpu =
-        GetFpu(params_, root_node_, /* is_root_node */ true, draw_score);
+        GetFpu(params_, root_node_, /* is_root_node */ true, draw_score, this);
     float max_q_plus_m = -1000;
     uint64_t max_n = 0;
     bool max_n_has_max_q_plus_m = true;
@@ -1114,6 +1071,57 @@ void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
     }
   }
   shared_collisions_.clear();
+}
+
+void Search::IncrementNInFlight(const Node* node, int multivisit) {
+  if (multivisit == 0) return;
+  Mutex::Lock lock(n_in_flight_mutex_);
+  n_in_flight_[node] += multivisit;
+}
+
+void Search::DecreaseNInFlight(const Node* node, int multivisit) {
+  Mutex::Lock lock(n_in_flight_mutex_);
+  if (!n_in_flight_.contains(node)) return;
+  n_in_flight_[node] -= multivisit;
+  if (n_in_flight_[node] == 0) n_in_flight_.erase(node);
+}
+
+uint32_t Search::GetNInFlight(const Node* node) const {
+  Mutex::Lock lock(n_in_flight_mutex_);
+  if (n_in_flight_.contains(node)) return n_in_flight_.at(node);
+  return 0;
+}
+
+uint32_t Search::GetNInFlight(const EdgeAndNode& e) const {
+  return e.HasNode() ? GetNInFlight(e.node()) : 0;
+}
+
+int Search::GetNStarted(const Node* node) const {
+  return node->GetN() + GetNInFlight(node);
+}
+
+int Search::GetNStarted(const EdgeAndNode& e) const {
+  return e.HasNode() ? GetNStarted(e.node()) : 0;
+}
+
+bool Search::TryStartScoreUpdate(const Node* node) {
+  Mutex::Lock lock(n_in_flight_mutex_);
+  if (node->GetN() == 0 && n_in_flight_.contains(node)) return false;
+  n_in_flight_[node]++;
+  return true;
+}
+
+float Search::GetU(const EdgeAndNode& e, float numerator) const {
+  return numerator * e.GetP() / (1 + GetNStarted(e));
+}
+
+float Search::GetVisitedPolicy(const Node* n) const {
+  float sum = 0.0f;
+  for (auto* node : n->Nodes()) {
+    if (GetNStarted(node) == 0) break;
+    sum += n->GetEdgeToNode(node)->GetP();
+  }
+  return sum;
 }
 
 Search::~Search() {
@@ -1445,7 +1453,7 @@ void SearchWorker::GatherMinibatch() {
           for (node = node->GetParent();
                node != search_->root_node_->GetParent();
                node = node->GetParent()) {
-            DecreaseNInFlight(node, minibatch_[i].multivisit);
+            search_->DecreaseNInFlight(node, minibatch_[i].multivisit);
           }
           minibatch_.erase(minibatch_.begin() + i);
         } else if (minibatch_[i].ooo_completed) {
@@ -1474,7 +1482,7 @@ void SearchWorker::GatherMinibatch() {
           for (node = node->GetParent();
                node != search_->root_node_->GetParent();
                node = node->GetParent()) {
-            IncrementNInFlight(node, extra);
+            search_->IncrementNInFlight(node, extra);
           }
         }
         if ((collisions_left -= picked_node.multivisit) <= 0) return;
@@ -1679,7 +1687,7 @@ void SearchWorker::PickNodesToExtendTask(
           // Root node is special - since its not reached from anywhere else, so
           // it needs its own logic. Still need to create the collision to
           // ensure the outer gather loop gives up.
-          if (TryStartScoreUpdate(node)) {
+          if (search_->TryStartScoreUpdate(node)) {
             cur_limit -= 1;
             minibatch_.push_back(NodeToProcess::Visit(
                 node, static_cast<uint16_t>(current_path.size() + base_depth)));
@@ -1705,7 +1713,7 @@ void SearchWorker::PickNodesToExtendTask(
       if (is_root_node) {
         // Root node is again special - needs its n in flight updated separately
         // as its not handled on the path to it, since there isn't one.
-        IncrementNInFlight(node, cur_limit);
+        search_->IncrementNInFlight(node, cur_limit);
       }
 
       // Create visits_to_perform new back entry for this level.
@@ -1730,7 +1738,8 @@ void SearchWorker::PickNodesToExtendTask(
       // node to stay at 64 bytes).
       int max_needed = node->GetNumEdges();
       if (!is_root_node || root_move_filter.empty()) {
-        max_needed = std::min(max_needed, GetNStarted(node) + cur_limit + 2);
+        max_needed =
+            std::min(max_needed, search_->GetNStarted(node) + cur_limit + 2);
       }
       node->CopyPolicy(max_needed, current_pol.data());
       for (int i = 0; i < max_needed; i++) {
@@ -1744,7 +1753,7 @@ void SearchWorker::PickNodesToExtendTask(
       m_evaluator.SetParent(node);
       float visited_pol = 0.0f;
       for (Node* child : node->Nodes()) {
-        if (GetNStarted(child) == 0) break;
+        if (search_->GetNStarted(child) == 0) break;
         int index = child->Index();
         visited_pol += current_pol[index];
         float q = child->GetQ(draw_score);
@@ -1778,7 +1787,7 @@ void SearchWorker::PickNodesToExtendTask(
               cur_iters[idx] = cur_iters[idx - 1];
               ++cur_iters[idx];
             }
-            current_nstarted[idx] = GetNStarted(cur_iters[idx]);
+            current_nstarted[idx] = search_->GetNStarted(cur_iters[idx]);
           }
           int nstarted = current_nstarted[idx];
           const float util = current_util[idx];
@@ -1859,12 +1868,12 @@ void SearchWorker::PickNodesToExtendTask(
             child_node, current_path.size() + base_depth + 1 - 1);
 
         bool decremented = false;
-        if (TryStartScoreUpdate(child_node)) {
+        if (search_->TryStartScoreUpdate(child_node)) {
           current_nstarted[best_idx]++;
           new_visits -= 1;
           decremented = true;
           if (child_node->GetN() > 0 && !child_node->IsTerminal()) {
-            IncrementNInFlight(child_node, new_visits);
+            search_->IncrementNInFlight(child_node, new_visits);
             current_nstarted[best_idx] += new_visits;
           }
           current_score[best_idx] = current_pol[best_idx] * puct_mult /
@@ -2097,7 +2106,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   if (budget <= 0) return 0;
 
   // We are in a leaf, which is not yet being processed.
-  if (!node || GetNStarted(node) == 0) {
+  if (!node || search_->GetNStarted(node) == 0) {
     if (search_->backend_->GetCachedEvaluation(
             EvalPosition{history_.GetPositions(), {}})) {
       // Make it return 0 to make it not use the slot, so that the function
@@ -2126,13 +2135,13 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   const float puct_mult =
       cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
   const float fpu =
-      GetFpu(params_, node, node == search_->root_node_, draw_score);
+      GetFpu(params_, node, node == search_->root_node_, draw_score, search_);
   for (auto& edge : node->Edges()) {
     if (edge.GetP() == 0.0f) continue;
     // Flip the sign of a score to be able to easily sort.
     // TODO: should this use logit_q if set??
-    scores.emplace_back(-GetU(edge, puct_mult) - edge.GetQ(fpu, draw_score),
-                        edge);
+    scores.emplace_back(
+        -search_->GetU(edge, puct_mult) - edge.GetQ(fpu, draw_score), edge);
   }
 
   size_t first_unsorted_index = 0;
@@ -2167,7 +2176,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
       if (next_score > q) {
         budget_to_spend =
             std::min(budget, int(edge.GetP() * puct_mult / (next_score - q) -
-                                 GetNStarted(edge)) +
+                                 search_->GetNStarted(edge)) +
                                  1);
       } else {
         budget_to_spend = budget;
@@ -2291,37 +2300,14 @@ void SearchWorker::DoBackupUpdateSingleNode(
     }
     n->FinalizeScoreUpdate(v, d, m, node_to_process.multivisit);
     // Decrement virtual loss.
-    DecreaseNInFlight(n, node_to_process.multivisit);
+    search_->DecreaseNInFlight(n, node_to_process.multivisit);
     if (n_to_fix > 0 && !n->IsTerminal()) {
       n->AdjustForTerminal(v_delta, d_delta, m_delta, n_to_fix);
     }
-    if (n->GetN() >= solid_threshold && !n->IsSolid() && !n->IsTerminal()) {
-      // Check that no immediate spawned child is still referenced by any
-      // in-flight visit or collision path.
-      bool can_solidify = true;
-      // Can only make solid if no immediate leaf children are in flight since
-      // we hold references to leaf nodes across locks.
-      uint32_t total_in_flight = 0;
-      for (Node* child : n->Nodes()) {
-        if (GetNStarted(child) == 0) break;
-        auto n_in_flight = GetNInFlight(child);
-        if (child->GetN() <= 1 && n_in_flight > 0) {
-          can_solidify = false;
-          break;
-        }
-        if (child->IsTerminal() && n_in_flight > 0) {
-          can_solidify = false;
-          break;
-        }
-        total_in_flight += n_in_flight;
-      }
-      // If the total of children in flight is not the same as the node, then
-      // there are collisions against immediate children (which don't update
-      // n_in_flight of the leaf) and its not safe.
-      if (total_in_flight != GetNInFlight(n)) {
-        can_solidify = false;
-      }
-      if (can_solidify && n->MakeSolid() && n == search_->root_node_) {
+    // The n-in-flight check ensures there are no pointers to children.
+    if (n->GetN() >= solid_threshold && !n->IsSolid() && !n->IsTerminal() &&
+        search_->GetNInFlight(n) == 0) {
+      if (n->MakeSolid() && n == search_->root_node_) {
         // If we make the root solid, the current_best_edge_ becomes invalid and
         // we should repopulate it.
         search_->current_best_edge_ =

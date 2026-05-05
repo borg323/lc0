@@ -229,7 +229,7 @@ std::string Node::DebugString() const {
   oss << " Term:" << static_cast<int>(terminal_type_) << " This:" << this
       << " Parent:" << parent_ << " Index:" << index_
       << " Child:" << child_.get() << " Sibling:" << sibling_.get()
-      << " WL:" << wl_ << " N:" << n_ << " N_:" << n_in_flight_
+      << " WL:" << wl_ << " N:" << n_
       << " Edges:" << static_cast<int>(num_edges_)
       << " Bounds:" << static_cast<int>(lower_bound_) - 2 << ","
       << static_cast<int>(upper_bound_) - 2 << " Solid:" << solid_children_;
@@ -316,8 +316,6 @@ void Node::SetBounds(GameResult lower, GameResult upper) {
   lower_bound_ = lower;
   upper_bound_ = upper;
 }
-
-void Node::CancelScoreUpdate(int multivisit) { n_in_flight_ -= multivisit; }
 
 void Node::FinalizeScoreUpdate(float v, float d, float m, int multivisit) {
   // Recompute Q.

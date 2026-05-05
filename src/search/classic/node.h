@@ -159,7 +159,6 @@ class Node {
   bool HasChildren() const { return static_cast<bool>(edges_); }
 
   uint32_t GetN() const { return n_; }
-  uint32_t GetNInFlight() const { return n_in_flight_; }
   uint32_t GetChildrenVisits() const { return n_ > 0 ? n_ - 1 : 0; }
   float GetQ(float draw_score) const { return wl_ + draw_score * d_; }
   // Returns node eval, i.e. average subtree V for non-terminal node and -1/0/1
@@ -192,27 +191,15 @@ class Node {
   void MakeNotTerminal();
   void SetBounds(GameResult lower, GameResult upper);
 
-  // If this node is not in the process of being expanded by another thread
-  // (which can happen only if n==0 and n-in-flight==1), mark the node as
-  // "being updated" by incrementing n-in-flight, and return true.
-  // Otherwise return false.
-  bool TryStartScoreUpdate();
-  // Decrements n-in-flight back.
-  void CancelScoreUpdate(int multivisit);
   // Updates the node with newly computed value v.
   // Updates:
   // * Q (weighted average of all V in a subtree)
   // * N (+=1)
-  // * N-in-flight (-=1)
   void FinalizeScoreUpdate(float v, float d, float m, int multivisit);
   // Like FinalizeScoreUpdate, but it updates n existing visits by delta amount.
   void AdjustForTerminal(float v, float d, float m, int multivisit);
   // Revert visits to a node which ended in a now reverted terminal.
   void RevertTerminalVisits(float v, float d, float m, int multivisit);
-  // When search decides to treat one visit as several (in case of collisions
-  // or visiting terminal nodes several times), it amplifies the visit by
-  // incrementing n_in_flight.
-  void IncrementNInFlight(int multivisit) { n_in_flight_ += multivisit; }
 
   // Updates max depth, if new depth is larger.
   void UpdateMaxDepth(int depth);
@@ -305,10 +292,6 @@ class Node {
   float m_ = 0.0f;
   // How many completed visits this node had.
   uint32_t n_ = 0;
-  // (AKA virtual loss.) How many threads currently process this node (started
-  // but not finished). This value is added to n during selection which node
-  // to pick in MCTS, and also when selecting the best move.
-  uint32_t n_in_flight_ = 0;
 
   // 2 byte fields.
   // Index of this node is parent's edge list.
@@ -346,9 +329,9 @@ class Node {
 
 // A basic sanity check. This must be adjusted when Node members are adjusted.
 #if defined(__i386__) || (defined(__arm__) && !defined(__aarch64__))
-static_assert(sizeof(Node) == 48, "Unexpected size of Node for 32bit compile");
+static_assert(sizeof(Node) == 40, "Unexpected size of Node for 32bit compile");
 #else
-static_assert(sizeof(Node) == 64, "Unexpected size of Node");
+static_assert(sizeof(Node) == 56, "Unexpected size of Node");
 #endif
 
 // Contains Edge and Node pair and set of proxy functions to simplify access
