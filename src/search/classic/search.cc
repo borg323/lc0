@@ -1065,10 +1065,9 @@ void Search::Wait() {
 
 void Search::CancelSharedCollisions() REQUIRES(nodes_mutex_) {
   for (auto& entry : shared_collisions_) {
-    Node* node = entry.first;
-    for (node = node->GetParent(); node != root_node_->GetParent();
-         node = node->GetParent()) {
-      node->CancelScoreUpdate(entry.second);
+    for (SearchNode* sn = entry.first->parent; sn != nullptr;
+         sn = sn->parent) {
+      sn->node->CancelScoreUpdate(entry.second);
     }
   }
   shared_collisions_.clear();
@@ -1144,7 +1143,8 @@ void SearchWorker::RunTasks(int tid) {
     if (task != nullptr) {
       switch (task->task_type) {
         case PickTask::kGathering: {
-          PickNodesToExtendTask(task->start, task->base_depth,
+          task_workspaces_[tid].current_search_node = task->start_search_node;
+          PickNodesToExtendTask(task->start_search_node, task->base_depth,
                                 task->collision_limit, task->moves_to_base,
                                 &(task->results), &(task_workspaces_[tid]));
           break;
@@ -1260,6 +1260,9 @@ void SearchWorker::InitializeIteration() {
   computation_ = search_->backend_->CreateComputation();
   minibatch_.clear();
   minibatch_.reserve(2 * target_minibatch_size_);
+  // Reset the shadow search tree for this iteration. The root SearchNode
+  // has no parent so backup traversal stops naturally at root_node_.
+  root_search_node_ = SearchNode{search_->root_node_, nullptr, {}};
 }
 
 // 2. Gather minibatch.
@@ -1399,11 +1402,9 @@ void SearchWorker::GatherMinibatch() {
         // This may remove too many items, but hopefully most of the time they
         // will just be added back in the same in the next gather.
         if (minibatch_[i].IsCollision()) {
-          Node* node = minibatch_[i].node;
-          for (node = node->GetParent();
-               node != search_->root_node_->GetParent();
-               node = node->GetParent()) {
-            node->CancelScoreUpdate(minibatch_[i].multivisit);
+          for (SearchNode* sn = minibatch_[i].search_node->parent;
+               sn != nullptr; sn = sn->parent) {
+            sn->node->CancelScoreUpdate(minibatch_[i].multivisit);
           }
           minibatch_.erase(minibatch_.begin() + i);
         } else if (minibatch_[i].ooo_completed) {
@@ -1428,11 +1429,9 @@ void SearchWorker::GatherMinibatch() {
           int extra = std::min(picked_node.maxvisit, collisions_left) -
                       picked_node.multivisit;
           picked_node.multivisit += extra;
-          Node* node = picked_node.node;
-          for (node = node->GetParent();
-               node != search_->root_node_->GetParent();
-               node = node->GetParent()) {
-            node->IncrementNInFlight(extra);
+          for (SearchNode* sn = picked_node.search_node->parent; sn != nullptr;
+               sn = sn->parent) {
+            sn->node->IncrementNInFlight(extra);
           }
         }
         if ((collisions_left -= picked_node.multivisit) <= 0) return;
@@ -1517,7 +1516,8 @@ void SearchWorker::PickNodesToExtend(int collision_limit) {
   // Since the tasks perform work which assumes they have the lock, even though
   // actually this thread does.
   SharedMutex::Lock lock(search_->nodes_mutex_);
-  PickNodesToExtendTask(search_->root_node_, 0, collision_limit, empty_movelist,
+  main_workspace_.current_search_node = &root_search_node_;
+  PickNodesToExtendTask(&root_search_node_, 0, collision_limit, empty_movelist,
                         &minibatch_, &main_workspace_);
 
   WaitForTasks();
@@ -1529,13 +1529,14 @@ void SearchWorker::PickNodesToExtend(int collision_limit) {
   }
 }
 
-void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
+void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(SearchNode* sn,
                                                     int depth) {
   // Check whether first repetition was before root. If yes, remove
   // terminal status of node and revert all visits in the tree.
   // Length of repetition was stored in m_. This code will only do
   // something when tree is reused and twofold visits need to be
   // reverted.
+  Node* child_node = sn->node;
   if (child_node->IsTwoFoldTerminal() && depth < child_node->GetM()) {
     // Take a mutex - any SearchWorker specific mutex... since this is
     // not safe to do concurrently between multiple tasks.
@@ -1548,11 +1549,10 @@ void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
     const auto d = child_node->GetD();
     const auto m = child_node->GetM();
     const auto terminal_visits = child_node->GetN();
-    for (Node* node_to_revert = child_node; node_to_revert != nullptr;
-         node_to_revert = node_to_revert->GetParent()) {
+    for (SearchNode* s = sn; s != nullptr; s = s->parent) {
       // Revert all visits on twofold draw when making it non terminal.
-      node_to_revert->RevertTerminalVisits(wl, d, m + (float)depth_counter,
-                                           terminal_visits);
+      s->node->RevertTerminalVisits(wl, d, m + (float)depth_counter,
+                                    terminal_visits);
       depth_counter++;
       // Even if original tree still exists, we don't want to revert
       // more than until new root.
@@ -1571,7 +1571,7 @@ void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
 }
 
 void SearchWorker::PickNodesToExtendTask(
-    Node* node, int base_depth, int collision_limit,
+    SearchNode* start_search_node, int base_depth, int collision_limit,
     const std::vector<Move>& moves_to_base,
     std::vector<NodeToProcess>* receiver,
     TaskWorkspace* workspace) NO_THREAD_SAFETY_ANALYSIS {
@@ -1589,6 +1589,10 @@ void SearchWorker::PickNodesToExtendTask(
   current_path.clear();
   auto& moves_to_path = workspace->moves_to_path;
   moves_to_path = moves_to_base;
+  // Current position in the shadow search tree.
+  auto& current_sn = workspace->current_search_node;
+  current_sn = start_search_node;
+  Node* node = current_sn->node;
   // Sometimes receiver is reused, othertimes not, so only jump start if small.
   if (receiver->capacity() < 30) {
     receiver->reserve(receiver->size() + 30);
@@ -1640,7 +1644,8 @@ void SearchWorker::PickNodesToExtendTask(
           if (node->TryStartScoreUpdate()) {
             cur_limit -= 1;
             minibatch_.push_back(NodeToProcess::Visit(
-                node, static_cast<uint16_t>(current_path.size() + base_depth)));
+                current_sn,
+                static_cast<uint16_t>(current_path.size() + base_depth)));
             completed_visits++;
           }
         }
@@ -1652,11 +1657,13 @@ void SearchWorker::PickNodesToExtendTask(
             max_count = max_limit;
           }
           receiver->push_back(NodeToProcess::Collision(
-              node, static_cast<uint16_t>(current_path.size() + base_depth),
+              current_sn,
+              static_cast<uint16_t>(current_path.size() + base_depth),
               cur_limit, max_count));
           completed_visits += cur_limit;
         }
-        node = node->GetParent();
+        current_sn = current_sn->parent;
+        node = current_sn ? current_sn->node : nullptr;
         current_path.pop_back();
         continue;
       }
@@ -1809,11 +1816,14 @@ void SearchWorker::PickNodesToExtendTask(
         (*visits_to_perform.back())[best_idx] += new_visits;
         cur_limit -= new_visits;
         Node* child_node = best_edge.GetOrSpawnNode(/* parent */ node);
+        // Find or create the shadow node for this child. This must be done
+        // before EnsureNodeTwoFoldCorrectForDepth so it can traverse the path.
+        SearchNode* child_sn = current_sn->GetOrSpawn(child_node);
 
         // Probably best place to check for two-fold draws consistently.
         // Depth starts with 1 at root, so real depth is depth - 1.
         EnsureNodeTwoFoldCorrectForDepth(
-            child_node, current_path.size() + base_depth + 1 - 1);
+            child_sn, current_path.size() + base_depth + 1 - 1);
 
         bool decremented = false;
         if (child_node->TryStartScoreUpdate()) {
@@ -1834,7 +1844,7 @@ void SearchWorker::PickNodesToExtendTask(
           // doesn't include this visit.
           (*visits_to_perform.back())[best_idx] -= 1;
           receiver->push_back(NodeToProcess::Visit(
-              child_node,
+              child_sn,
               static_cast<uint16_t>(current_path.size() + 1 + base_depth)));
           completed_visits++;
           receiver->back().moves_to_visit.reserve(moves_to_path.size() + 1);
@@ -1870,7 +1880,8 @@ void SearchWorker::PickNodesToExtendTask(
             if (picking_tasks_.size() < MAX_TASKS) {
               moves_to_path.push_back(cur_iters[i].GetMove());
               picking_tasks_.emplace_back(
-                  child_node, current_path.size() - 1 + base_depth + 1,
+                  current_sn->GetOrSpawn(child_node),
+                  current_path.size() - 1 + base_depth + 1,
                   moves_to_path, child_limit);
               moves_to_path.pop_back();
               task_count_.fetch_add(1, std::memory_order_acq_rel);
@@ -1901,6 +1912,7 @@ void SearchWorker::PickNodesToExtendTask(
           current_path.back() = idx;
           current_path.push_back(-1);
           node = child.GetOrSpawnNode(/* parent */ node);
+          current_sn = current_sn->GetOrSpawn(node);
           found_child = true;
           break;
         }
@@ -1908,7 +1920,8 @@ void SearchWorker::PickNodesToExtendTask(
       }
     }
     if (!found_child) {
-      node = node->GetParent();
+      current_sn = current_sn->parent;
+      node = current_sn ? current_sn->node : nullptr;
       if (!moves_to_path.empty()) moves_to_path.pop_back();
       current_path.pop_back();
       vtp_buffer.push_back(std::move(visits_to_perform.back()));
@@ -2022,7 +2035,7 @@ void SearchWorker::CollectCollisions() {
 
   for (const NodeToProcess& node_to_process : minibatch_) {
     if (node_to_process.IsCollision()) {
-      search_->shared_collisions_.emplace_back(node_to_process.node,
+      search_->shared_collisions_.emplace_back(node_to_process.search_node,
                                                node_to_process.multivisit);
     }
   }
@@ -2236,8 +2249,11 @@ void SearchWorker::DoBackupUpdateSingleNode(
   float m_delta = 0.0f;
   uint32_t solid_threshold =
       static_cast<uint32_t>(params_.GetSolidTreeThreshold());
-  for (Node *n = node, *p; n != search_->root_node_->GetParent(); n = p) {
-    p = n->GetParent();
+  // Traverse from leaf to root via the shadow search tree. The root SearchNode
+  // has parent == nullptr, so the loop terminates naturally after root_node_.
+  for (SearchNode* cur_sn = node_to_process.search_node; cur_sn != nullptr;
+       cur_sn = cur_sn->parent) {
+    Node* n = cur_sn->node;
 
     // Current node might have become terminal from some other descendant, so
     // backup the rest of the way with more accurate values.
@@ -2260,7 +2276,9 @@ void SearchWorker::DoBackupUpdateSingleNode(
     }
 
     // Nothing left to do without ancestors to update.
-    if (!p) break;
+    SearchNode* parent_sn = cur_sn->parent;
+    if (!parent_sn) break;
+    Node* p = parent_sn->node;
 
     bool old_update_parent_bounds = update_parent_bounds;
     // If parent already is terminal further adjustment is not required.

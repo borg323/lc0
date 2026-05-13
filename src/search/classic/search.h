@@ -47,6 +47,28 @@
 namespace lczero {
 namespace classic {
 
+// A shadow node that mirrors a Node in the NodeTree for the duration of a
+// search iteration. The tree of SearchNodes tracks only the paths that are
+// currently active in the search, providing parent/child links without
+// requiring the NodeTree to expose them in a search-path-specific way.
+struct SearchNode {
+  Node* node = nullptr;
+  SearchNode* parent = nullptr;
+  std::vector<std::unique_ptr<SearchNode>> children;
+
+  // Returns the existing child SearchNode for @child_node, or creates a new
+  // one and returns it. Not thread-safe: callers must ensure at most one task
+  // modifies a given SearchNode's children at a time.
+  SearchNode* GetOrSpawn(Node* child_node) {
+    for (auto& child : children) {
+      if (child->node == child_node) return child.get();
+    }
+    children.push_back(
+        std::make_unique<SearchNode>(SearchNode{child_node, this, {}}));
+    return children.back().get();
+  }
+};
+
 class Search {
  public:
   Search(const NodeTree& tree, Backend* network,
@@ -195,7 +217,7 @@ class Search {
   std::atomic<int> backend_waiting_counter_{0};
   std::atomic<int> thread_count_{0};
 
-  std::vector<std::pair<Node*, int>> shared_collisions_
+  std::vector<std::pair<SearchNode*, int>> shared_collisions_
       GUARDED_BY(nodes_mutex_);
 
   std::unique_ptr<UciResponder> uci_responder_;
@@ -310,7 +332,9 @@ class SearchWorker {
       return is_cache_hit || node->IsTerminal();
     }
 
-    // The node to extend.
+    // Shadow-tree node representing the path from the search root to this node.
+    SearchNode* search_node = nullptr;
+    // The node to extend (equal to search_node->node).
     Node* node;
     std::unique_ptr<EvalResult> eval;
     int multivisit = 0;
@@ -328,22 +352,23 @@ class SearchWorker {
     // Details that are filled in as we go.
     bool ooo_completed = false;
 
-    static NodeToProcess Collision(Node* node, uint16_t depth,
+    static NodeToProcess Collision(SearchNode* search_node, uint16_t depth,
                                    int collision_count) {
-      return NodeToProcess(node, depth, true, collision_count, 0);
+      return NodeToProcess(search_node, depth, true, collision_count, 0);
     }
-    static NodeToProcess Collision(Node* node, uint16_t depth,
+    static NodeToProcess Collision(SearchNode* search_node, uint16_t depth,
                                    int collision_count, int max_count) {
-      return NodeToProcess(node, depth, true, collision_count, max_count);
+      return NodeToProcess(search_node, depth, true, collision_count, max_count);
     }
-    static NodeToProcess Visit(Node* node, uint16_t depth) {
-      return NodeToProcess(node, depth, false, 1, 0);
+    static NodeToProcess Visit(SearchNode* search_node, uint16_t depth) {
+      return NodeToProcess(search_node, depth, false, 1, 0);
     }
 
    private:
-    NodeToProcess(Node* node, uint16_t depth, bool is_collision, int multivisit,
-                  int max_count)
-        : node(node),
+    NodeToProcess(SearchNode* search_node, uint16_t depth, bool is_collision,
+                  int multivisit, int max_count)
+        : search_node(search_node),
+          node(search_node->node),
           eval(std::make_unique<EvalResult>()),
           multivisit(multivisit),
           maxvisit(max_count),
@@ -359,6 +384,8 @@ class SearchWorker {
     std::vector<int> vtp_last_filled;
     std::vector<int> current_path;
     std::vector<Move> moves_to_path;
+    // Current position in the shadow search tree during PickNodesToExtendTask.
+    SearchNode* current_search_node = nullptr;
     PositionHistory history;
     TaskWorkspace() {
       vtp_buffer.reserve(30);
@@ -375,7 +402,7 @@ class SearchWorker {
     PickTaskType task_type;
 
     // For task type gathering.
-    Node* start;
+    SearchNode* start_search_node;
     int base_depth;
     int collision_limit;
     std::vector<Move> moves_to_base;
@@ -387,10 +414,10 @@ class SearchWorker {
 
     bool complete = false;
 
-    PickTask(Node* node, uint16_t depth, const std::vector<Move>& base_moves,
-             int collision_limit)
+    PickTask(SearchNode* search_node, uint16_t depth,
+             const std::vector<Move>& base_moves, int collision_limit)
         : task_type(kGathering),
-          start(node),
+          start_search_node(search_node),
           base_depth(depth),
           collision_limit(collision_limit),
           moves_to_base(base_moves) {}
@@ -405,12 +432,12 @@ class SearchWorker {
   bool MaybeSetBounds(Node* p, float m, int* n_to_fix, float* v_delta,
                       float* d_delta, float* m_delta) const;
   void PickNodesToExtend(int collision_limit);
-  void PickNodesToExtendTask(Node* starting_point, int base_depth,
+  void PickNodesToExtendTask(SearchNode* start_search_node, int base_depth,
                              int collision_limit,
                              const std::vector<Move>& moves_to_base,
                              std::vector<NodeToProcess>* receiver,
                              TaskWorkspace* workspace);
-  void EnsureNodeTwoFoldCorrectForDepth(Node* node, int depth);
+  void EnsureNodeTwoFoldCorrectForDepth(SearchNode* sn, int depth);
   void ProcessPickedTask(int batch_start, int batch_end,
                          TaskWorkspace* workspace);
   void ExtendNode(Node* node, int depth, const std::vector<Move>& moves_to_add,
@@ -435,6 +462,10 @@ class SearchWorker {
   const bool moves_left_support_;
   IterationStats iteration_stats_;
   StoppersHints latest_time_manager_hints_;
+
+  // Root of the shadow search tree, reset each iteration. Children are
+  // allocated on demand as paths are explored in PickNodesToExtendTask.
+  SearchNode root_search_node_;
 
   // Multigather task related fields.
 
