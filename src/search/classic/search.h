@@ -48,9 +48,11 @@ namespace lczero {
 namespace classic {
 
 // A shadow node that mirrors a Node in the NodeTree for the duration of a
-// search iteration. The tree of SearchNodes tracks only the paths that are
-// currently active in the search, providing parent/child links without
-// requiring the NodeTree to expose them in a search-path-specific way.
+// search. The tree of SearchNodes tracks all paths that have been explored
+// during this search, providing parent/child links without requiring the
+// NodeTree to expose them in a search-path-specific way. The tree is shared
+// across all SearchWorkers and grows on demand; all accesses are serialized
+// by Search::nodes_mutex_.
 struct SearchNode {
   Node* node = nullptr;
   SearchNode* parent = nullptr;
@@ -209,6 +211,13 @@ class Search {
   uint16_t max_depth_ GUARDED_BY(nodes_mutex_) = 0;
   // Cumulative depth of all paths taken in PickNodetoExtend.
   uint64_t cum_depth_ GUARDED_BY(nodes_mutex_) = 0;
+
+  // Shadow search tree shared across all SearchWorkers. Mirrors the parts of
+  // the NodeTree that have been explored during this search. Children are added
+  // on demand (via SearchNode::GetOrSpawn) as paths are explored; existing
+  // nodes are reused across iterations since parent/child relationships in the
+  // NodeTree are stable throughout a search. All accesses are under nodes_mutex_.
+  SearchNode search_root_node_ GUARDED_BY(nodes_mutex_);
 
   std::optional<std::chrono::steady_clock::time_point> nps_start_time_
       GUARDED_BY(counters_mutex_);
@@ -462,10 +471,6 @@ class SearchWorker {
   const bool moves_left_support_;
   IterationStats iteration_stats_;
   StoppersHints latest_time_manager_hints_;
-
-  // Root of the shadow search tree, reset each iteration. Children are
-  // allocated on demand as paths are explored in PickNodesToExtendTask.
-  SearchNode root_search_node_;
 
   // Multigather task related fields.
 

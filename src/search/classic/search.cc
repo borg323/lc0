@@ -196,6 +196,7 @@ Search::Search(const NodeTree& tree, Backend* backend,
                            : ContemptMode::WHITE;
     }
   }
+  search_root_node_ = SearchNode{root_node_, nullptr, {}};
 }
 
 namespace {
@@ -1260,9 +1261,6 @@ void SearchWorker::InitializeIteration() {
   computation_ = search_->backend_->CreateComputation();
   minibatch_.clear();
   minibatch_.reserve(2 * target_minibatch_size_);
-  // Reset the shadow search tree for this iteration. The root SearchNode
-  // has no parent so backup traversal stops naturally at root_node_.
-  root_search_node_ = SearchNode{search_->root_node_, nullptr, {}};
 }
 
 // 2. Gather minibatch.
@@ -1516,9 +1514,9 @@ void SearchWorker::PickNodesToExtend(int collision_limit) {
   // Since the tasks perform work which assumes they have the lock, even though
   // actually this thread does.
   SharedMutex::Lock lock(search_->nodes_mutex_);
-  main_workspace_.current_search_node = &root_search_node_;
-  PickNodesToExtendTask(&root_search_node_, 0, collision_limit, empty_movelist,
-                        &minibatch_, &main_workspace_);
+  main_workspace_.current_search_node = &search_->search_root_node_;
+  PickNodesToExtendTask(&search_->search_root_node_, 0, collision_limit,
+                        empty_movelist, &minibatch_, &main_workspace_);
 
   WaitForTasks();
   for (int i = 0; i < static_cast<int>(picking_tasks_.size()); i++) {
