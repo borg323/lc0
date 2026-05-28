@@ -55,19 +55,27 @@ namespace classic {
 // by Search::nodes_mutex_.
 struct SearchNode {
   Node* node = nullptr;
+  Edge* edge = nullptr;
   SearchNode* parent = nullptr;
   std::vector<std::unique_ptr<SearchNode>> children;
 
-  // Returns the existing child SearchNode for @child_node, or creates a new
-  // one and returns it. Not thread-safe: callers must ensure at most one task
-  // modifies a given SearchNode's children at a time.
-  SearchNode* GetOrSpawn(Node* child_node) {
-    for (auto& child : children) {
-      if (child->node == child_node) return child.get();
+  // Returns the child SearchNode at @edge_idx, creating it (and any missing
+  // slots before it) if it does not yet exist. @edge is the corresponding Edge
+  // pointer; @child_node is the child Node pointer (may be nullptr if not yet
+  // spawned in the NodeTree). Callers must have reserved children to at least
+  // @edge_idx + 1 slots before the first call at a given depth level to avoid
+  // invalidating iterators.
+  SearchNode* GetOrSpawnAtIdx(int edge_idx, Edge* edge, Node* child_node) {
+    if (static_cast<int>(children.size()) <= edge_idx) {
+      children.resize(edge_idx + 1);
     }
-    children.push_back(
-        std::make_unique<SearchNode>(SearchNode{child_node, this, {}}));
-    return children.back().get();
+    if (children[edge_idx] == nullptr) {
+      children[edge_idx] =
+          std::make_unique<SearchNode>(SearchNode{child_node, edge, this, {}});
+    } else if (child_node != nullptr && children[edge_idx]->node == nullptr) {
+      children[edge_idx]->node = child_node;
+    }
+    return children[edge_idx].get();
   }
 };
 
@@ -214,7 +222,7 @@ class Search {
 
   // Shadow search tree shared across all SearchWorkers. Mirrors the parts of
   // the NodeTree that have been explored during this search. Children are added
-  // on demand (via SearchNode::GetOrSpawn) as paths are explored; existing
+  // on demand (via SearchNode::GetOrSpawnAtIdx) as paths are explored; existing
   // nodes are reused across iterations since parent/child relationships in the
   // NodeTree are stable throughout a search. All accesses are under nodes_mutex_.
   SearchNode search_root_node_ GUARDED_BY(nodes_mutex_);
@@ -387,7 +395,8 @@ class SearchWorker {
 
   // Holds per task worker scratch data
   struct TaskWorkspace {
-    std::array<Node::Iterator, 256> cur_iters;
+    std::array<std::vector<std::unique_ptr<SearchNode>>::iterator, 256>
+        cur_iters;
     std::vector<std::unique_ptr<std::array<int, 256>>> vtp_buffer;
     std::vector<std::unique_ptr<std::array<int, 256>>> visits_to_perform;
     std::vector<int> vtp_last_filled;

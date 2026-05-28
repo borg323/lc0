@@ -1605,8 +1605,6 @@ void SearchWorker::PickNodesToExtendTask(
   std::array<int, 256> current_nstarted;
   auto& cur_iters = workspace->cur_iters;
 
-  Node::Iterator best_edge;
-  Node::Iterator second_best_edge;
   // Fetch the current best root node visits for possible smart pruning.
   const int64_t best_node_n = search_->current_best_edge_.GetN();
 
@@ -1723,6 +1721,11 @@ void SearchWorker::PickNodesToExtendTask(
       const float cpuct = ComputeCpuct(params_, node->GetN(), is_root_node);
       const float puct_mult =
           cpuct * std::sqrt(std::max(node->GetChildrenVisits(), 1u));
+      // Reserve children slots up-front so that iterators stored in cur_iters
+      // are not invalidated when GetOrSpawnAtIdx resizes children later.
+      current_sn->children.reserve(max_needed);
+      // edge_iter walks node->Edges() lazily in step with cache_filled_idx.
+      Node::Iterator edge_iter;
       int cache_filled_idx = -1;
       while (cur_limit > 0) {
         // Perform UCT for current node.
@@ -1730,17 +1733,19 @@ void SearchWorker::PickNodesToExtendTask(
         int best_idx = -1;
         float best_without_u = std::numeric_limits<float>::lowest();
         float second_best = std::numeric_limits<float>::lowest();
+        bool second_best_valid = false;
         bool can_exit = false;
-        best_edge.Reset();
         for (int idx = 0; idx < max_needed; ++idx) {
           if (idx > cache_filled_idx) {
             if (idx == 0) {
-              cur_iters[idx] = node->Edges();
+              edge_iter = node->Edges();
             } else {
-              cur_iters[idx] = cur_iters[idx - 1];
-              ++cur_iters[idx];
+              ++edge_iter;
             }
-            current_nstarted[idx] = cur_iters[idx].GetNStarted();
+            current_sn->GetOrSpawnAtIdx(idx, edge_iter.edge(),
+                                        edge_iter.node());
+            cur_iters[idx] = current_sn->children.begin() + idx;
+            current_nstarted[idx] = edge_iter.GetNStarted();
           }
           int nstarted = current_nstarted[idx];
           const float util = current_util[idx];
@@ -1755,15 +1760,20 @@ void SearchWorker::PickNodesToExtendTask(
             // best_move_node_ could have changed since best_node_n was
             // retrieved. To ensure we have at least one node to expand, always
             // include current best node.
-            if (cur_iters[idx] != search_->current_best_edge_ &&
+            if ((*cur_iters[idx])->edge != search_->current_best_edge_.edge() &&
                 latest_time_manager_hints_.GetEstimatedRemainingPlayouts() <
-                    best_node_n - cur_iters[idx].GetN()) {
+                    best_node_n -
+                        static_cast<int64_t>(
+                            (*cur_iters[idx])->node
+                                ? (*cur_iters[idx])->node->GetN()
+                                : 0)) {
               continue;
             }
             // If root move filter exists, make sure move is in the list.
             if (!root_move_filter.empty() &&
                 std::find(root_move_filter.begin(), root_move_filter.end(),
-                          cur_iters[idx].GetMove()) == root_move_filter.end()) {
+                          (*cur_iters[idx])->edge->GetMove()) ==
+                    root_move_filter.end()) {
               continue;
             }
           }
@@ -1771,14 +1781,13 @@ void SearchWorker::PickNodesToExtendTask(
           float score = current_score[idx];
           if (score > best) {
             second_best = best;
-            second_best_edge = best_edge;
+            second_best_valid = (best_idx != -1);
             best = score;
             best_idx = idx;
             best_without_u = util;
-            best_edge = cur_iters[idx];
           } else if (score > second_best) {
             second_best = score;
-            second_best_edge = cur_iters[idx];
+            second_best_valid = true;
           }
           if (can_exit) break;
           if (nstarted == 0) {
@@ -1789,7 +1798,7 @@ void SearchWorker::PickNodesToExtendTask(
           }
         }
         int new_visits = 0;
-        if (second_best_edge) {
+        if (second_best_valid) {
           int estimated_visits_to_change_best = std::numeric_limits<int>::max();
           if (best_without_u < second_best) {
             const auto n1 = current_nstarted[best_idx] + 1;
@@ -1799,7 +1808,7 @@ void SearchWorker::PickNodesToExtendTask(
                                             n1 + 1,
                                         1e9f)));
           }
-          second_best_edge.Reset();
+          second_best_valid = false;
           max_limit = std::min(max_limit, estimated_visits_to_change_best);
           new_visits = std::min(cur_limit, estimated_visits_to_change_best);
         } else {
@@ -1813,10 +1822,17 @@ void SearchWorker::PickNodesToExtendTask(
         }
         (*visits_to_perform.back())[best_idx] += new_visits;
         cur_limit -= new_visits;
-        Node* child_node = best_edge.GetOrSpawnNode(/* parent */ node);
-        // Find or create the shadow node for this child. This must be done
-        // before EnsureNodeTwoFoldCorrectForDepth so it can traverse the path.
-        SearchNode* child_sn = current_sn->GetOrSpawn(child_node);
+        Node* child_node = (*cur_iters[best_idx])->node;
+        if (child_node == nullptr) {
+          // Child not yet spawned in the NodeTree: reconstruct the iterator at
+          // best_idx to call GetOrSpawnNode, then cache the result.
+          Node::Iterator spawn_iter = node->Edges();
+          for (int j = 0; j < best_idx; j++) ++spawn_iter;
+          child_node = spawn_iter.GetOrSpawnNode(/* parent */ node);
+          (*cur_iters[best_idx])->node = child_node;
+        }
+        // The shadow node for this child was created in GetOrSpawnAtIdx.
+        SearchNode* child_sn = (*cur_iters[best_idx]).get();
 
         // Probably best place to check for two-fold draws consistently.
         // Depth starts with 1 at root, so real depth is depth - 1.
@@ -1847,7 +1863,8 @@ void SearchWorker::PickNodesToExtendTask(
           completed_visits++;
           receiver->back().moves_to_visit.reserve(moves_to_path.size() + 1);
           receiver->back().moves_to_visit = moves_to_path;
-          receiver->back().moves_to_visit.push_back(best_edge.GetMove());
+          receiver->back().moves_to_visit.push_back(
+              (*cur_iters[best_idx])->edge->GetMove());
         }
         if (best_idx > vtp_last_filled.back() &&
             (*visits_to_perform.back())[best_idx] > 0) {
@@ -1866,7 +1883,7 @@ void SearchWorker::PickNodesToExtendTask(
             child_limit + passed_off + completed_visits <
                 collision_limit -
                     params_.GetMinimumRemainingWorkSizeForPicking()) {
-          Node* child_node = cur_iters[i].GetOrSpawnNode(/* parent */ node);
+          Node* child_node = (*cur_iters[i])->node;
           // Don't split if not expanded or terminal.
           if (child_node->GetN() == 0 || child_node->IsTerminal()) continue;
 
@@ -1876,9 +1893,9 @@ void SearchWorker::PickNodesToExtendTask(
             Mutex::Lock lock(picking_tasks_mutex_);
             // Ensure not to exceed size of reservation.
             if (picking_tasks_.size() < MAX_TASKS) {
-              moves_to_path.push_back(cur_iters[i].GetMove());
+              moves_to_path.push_back((*cur_iters[i])->edge->GetMove());
               picking_tasks_.emplace_back(
-                  current_sn->GetOrSpawn(child_node),
+                  (*cur_iters[i]).get(),
                   current_path.size() - 1 + base_depth + 1,
                   moves_to_path, child_limit);
               moves_to_path.pop_back();
@@ -1910,7 +1927,7 @@ void SearchWorker::PickNodesToExtendTask(
           current_path.back() = idx;
           current_path.push_back(-1);
           node = child.GetOrSpawnNode(/* parent */ node);
-          current_sn = current_sn->GetOrSpawn(node);
+          current_sn = current_sn->GetOrSpawnAtIdx(idx, child.edge(), node);
           found_child = true;
           break;
         }
