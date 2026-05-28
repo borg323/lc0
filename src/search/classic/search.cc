@@ -1726,6 +1726,11 @@ void SearchWorker::PickNodesToExtendTask(
       current_sn->children.reserve(max_needed);
       // edge_iter walks node->Edges() lazily in step with cache_filled_idx.
       Node::Iterator edge_iter;
+      // Snapshot of edge_iter taken when best_idx was last updated inside the
+      // fill region (idx > cache_filled_idx).  Valid only when the captured
+      // best_idx was filled in the current while-loop iteration; cleared
+      // otherwise so we know to reconstruct.
+      Node::Iterator best_spawn_iter;
       int cache_filled_idx = -1;
       while (cur_limit > 0) {
         // Perform UCT for current node.
@@ -1736,7 +1741,8 @@ void SearchWorker::PickNodesToExtendTask(
         bool second_best_valid = false;
         bool can_exit = false;
         for (int idx = 0; idx < max_needed; ++idx) {
-          if (idx > cache_filled_idx) {
+          const bool just_filled = (idx > cache_filled_idx);
+          if (just_filled) {
             if (idx == 0) {
               edge_iter = node->Edges();
             } else {
@@ -1749,7 +1755,7 @@ void SearchWorker::PickNodesToExtendTask(
           }
           int nstarted = current_nstarted[idx];
           const float util = current_util[idx];
-          if (idx > cache_filled_idx) {
+          if (just_filled) {
             current_score[idx] =
                 current_pol[idx] * puct_mult / (1 + nstarted) + util;
             cache_filled_idx++;
@@ -1785,6 +1791,10 @@ void SearchWorker::PickNodesToExtendTask(
             best = score;
             best_idx = idx;
             best_without_u = util;
+            // If this idx was just filled, edge_iter is already pointing at it;
+            // save a copy for the spawning step below.  Otherwise clear it so
+            // we know to reconstruct when the child hasn't been spawned yet.
+            best_spawn_iter = just_filled ? edge_iter : Node::Iterator{};
           } else if (score > second_best) {
             second_best = score;
             second_best_valid = true;
@@ -1824,11 +1834,13 @@ void SearchWorker::PickNodesToExtendTask(
         cur_limit -= new_visits;
         Node* child_node = (*cur_iters[best_idx])->node;
         if (child_node == nullptr) {
-          // Child not yet spawned in the NodeTree: reconstruct the iterator at
-          // best_idx to call GetOrSpawnNode, then cache the result.
-          Node::Iterator spawn_iter = node->Edges();
-          for (int j = 0; j < best_idx; j++) ++spawn_iter;
-          child_node = spawn_iter.GetOrSpawnNode(/* parent */ node);
+          // Child not yet spawned in the NodeTree.  Use the cached iterator
+          // snapshot if available; otherwise reconstruct from the edge list.
+          if (!best_spawn_iter) {
+            best_spawn_iter = node->Edges();
+            for (int j = 0; j < best_idx; j++) ++best_spawn_iter;
+          }
+          child_node = best_spawn_iter.GetOrSpawnNode(/* parent */ node);
           (*cur_iters[best_idx])->node = child_node;
         }
         // The shadow node for this child was created in GetOrSpawnAtIdx.
@@ -1884,8 +1896,10 @@ void SearchWorker::PickNodesToExtendTask(
                 collision_limit -
                     params_.GetMinimumRemainingWorkSizeForPicking()) {
           Node* child_node = (*cur_iters[i])->node;
-          // Don't split if not expanded or terminal.
-          if (child_node->GetN() == 0 || child_node->IsTerminal()) continue;
+          // Don't split if not yet spawned, not expanded, or terminal.
+          if (!child_node || child_node->GetN() == 0 ||
+              child_node->IsTerminal())
+            continue;
 
           bool passed = false;
           {
@@ -1927,6 +1941,8 @@ void SearchWorker::PickNodesToExtendTask(
           current_path.back() = idx;
           current_path.push_back(-1);
           node = child.GetOrSpawnNode(/* parent */ node);
+          // current_sn->children was reserved to max_needed above, so
+          // resize inside GetOrSpawnAtIdx will not invalidate cur_iters.
           current_sn = current_sn->GetOrSpawnAtIdx(idx, child.edge(), node);
           found_child = true;
           break;
