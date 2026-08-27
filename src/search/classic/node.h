@@ -124,7 +124,7 @@ class Edge_Iterator;
 template <bool is_const>
 class VisitedNode_Iterator;
 
-class Node {
+class alignas(64) Node {
  public:
   using Iterator = Edge_Iterator<false>;
   using ConstIterator = Edge_Iterator<true>;

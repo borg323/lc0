@@ -26,31 +26,14 @@
 */
 
 #pragma once
+#include <bit>
 #include <cstdint>
 #include <iterator>
-#ifdef _MSC_VER
-#include <intrin.h>
-#endif
 
 namespace lczero {
 
 inline unsigned long GetLowestBit(std::uint64_t value) {
-#if defined(_MSC_VER) && defined(_WIN64)
-  unsigned long result;
-  _BitScanForward64(&result, value);
-  return result;
-#elif defined(_MSC_VER)
-  unsigned long result;
-  if (value & 0xFFFFFFFF) {
-    _BitScanForward(&result, value);
-  } else {
-    _BitScanForward(&result, value >> 32);
-    result += 32;
-  }
-  return result;
-#else
-  return __builtin_ctzll(value);
-#endif
+  return static_cast<unsigned long>(std::countr_zero(value));
 }
 
 enum BoardTransform {
@@ -70,11 +53,8 @@ inline uint64_t ReverseBitsInBytes(uint64_t v) {
   return v;
 }
 
-inline uint64_t ReverseBytesInBytes(uint64_t v) {
-  v = (v & 0x00000000FFFFFFFF) << 32 | (v & 0xFFFFFFFF00000000) >> 32;
-  v = (v & 0x0000FFFF0000FFFF) << 16 | (v & 0xFFFF0000FFFF0000) >> 16;
-  v = (v & 0x00FF00FF00FF00FF) << 8 | (v & 0xFF00FF00FF00FF00) >> 8;
-  return v;
+inline constexpr uint64_t ReverseBytesInBytes(uint64_t v) noexcept {
+  return std::byteswap(v);
 }
 
 // Transpose across the diagonal connecting bit 7 to bit 56.

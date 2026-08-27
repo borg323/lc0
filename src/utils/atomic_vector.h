@@ -32,9 +32,12 @@ namespace lczero {
 template <typename T>
 class AtomicVector {
  public:
+  struct alignas(alignof(T)) Storage {
+    unsigned char data[sizeof(T)];
+  };
+
   explicit AtomicVector(size_t capacity) : capacity_(capacity), size_(0) {
-    data_ = new
-        typename std::aligned_storage<sizeof(T), alignof(T)>::type[capacity];
+    data_ = new Storage[capacity];
   }
 
   ~AtomicVector() {
@@ -80,7 +83,7 @@ class AtomicVector {
  private:
   const size_t capacity_;
   std::atomic<size_t> size_;
-  typename std::aligned_storage<sizeof(T), alignof(T)>::type* data_;
+  Storage* data_;
 };
 
 }  // namespace lczero

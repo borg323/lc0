@@ -29,7 +29,7 @@ endif
 if cc.get_id() != 'msvc'
   if get_option('buildtype') == 'release'
      if get_option('native_arch')
-       add_project_arguments(cc.get_supported_arguments(['-march=native']), language : 'cpp')
+       add_project_arguments(cc.get_supported_arguments(['-march=native', '-fno-math-errno', '-fno-trapping-math']), language : 'cpp')
      endif
   endif
 endif
