@@ -28,6 +28,7 @@
 #include "search/classic/node.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -161,8 +162,7 @@ Move Edge::GetMove(bool as_opponent) const {
 void Edge::SetP(float p) {
   assert(0.0f <= p && p <= 1.0f);
   constexpr int32_t roundings = (1 << 11) - (3 << 28);
-  int32_t tmp;
-  std::memcpy(&tmp, &p, sizeof(float));
+  int32_t tmp = std::bit_cast<int32_t>(p);
   tmp += roundings;
   p_ = (tmp < 0) ? 0 : static_cast<uint16_t>(tmp >> 12);
 }
@@ -170,9 +170,7 @@ void Edge::SetP(float p) {
 float Edge::GetP() const {
   // Reshift into place and set the assumed-set exponent bits.
   uint32_t tmp = (static_cast<uint32_t>(p_) << 12) | (3 << 28);
-  float ret;
-  std::memcpy(&ret, &tmp, sizeof(uint32_t));
-  return ret;
+  return std::bit_cast<float>(tmp);
 }
 
 std::string Edge::DebugString() const {
@@ -492,11 +490,10 @@ void NodeTree::TrimTreeAtHead() {
 
 bool NodeTree::ResetToPosition(const GameState& pos) {
   if (gamebegin_node_ && (history_.Starting() != pos.startpos)) {
-    // Completely different position.
-    DeallocateTree();
-  }
-
-  if (!gamebegin_node_) {
+    // Completely different position: recycle root node in-place to eliminate heap reallocations.
+    gamebegin_node_->ReleaseChildren();
+    *gamebegin_node_ = Node(nullptr, 0);
+  } else if (!gamebegin_node_) {
     gamebegin_node_ = std::make_unique<Node>(nullptr, 0);
   }
 
