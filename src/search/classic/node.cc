@@ -490,10 +490,11 @@ void NodeTree::TrimTreeAtHead() {
 
 bool NodeTree::ResetToPosition(const GameState& pos) {
   if (gamebegin_node_ && (history_.Starting() != pos.startpos)) {
-    // Completely different position: recycle root node in-place to eliminate heap reallocations.
-    gamebegin_node_->ReleaseChildren();
-    *gamebegin_node_ = Node(nullptr, 0);
-  } else if (!gamebegin_node_) {
+    // Completely different position.
+    DeallocateTree();
+  }
+
+  if (!gamebegin_node_) {
     gamebegin_node_ = std::make_unique<Node>(nullptr, 0);
   }
 
