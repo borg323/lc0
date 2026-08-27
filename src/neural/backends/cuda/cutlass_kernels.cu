@@ -34,20 +34,20 @@
 namespace lczero {
 namespace cudnn_backend {
 
-template <bool bias>
+template <typename ElementType, bool bias>
 void fusedMHACutlass(void* output, void* q, void* k, void* v, void* skip,
                      int batch_size, int num_heads, int depth,
                      cudaStream_t stream) {
-  cutlass::half_t* mha_q = (cutlass::half_t*)q;
-  cutlass::half_t* mha_k = (cutlass::half_t*)k;
-  cutlass::half_t* mha_v = (cutlass::half_t*)v;
+  ElementType* mha_q = (ElementType*)q;
+  ElementType* mha_k = (ElementType*)k;
+  ElementType* mha_v = (ElementType*)v;
 
   constexpr int kQueriesPerBlock = 64;
   constexpr int kKeysPerBlock = 64;
   constexpr bool kSingleValueIteration = true;
 
   using Attention =
-      AttentionKernel<cutlass::half_t,      // scalar_t
+      AttentionKernel<ElementType,          // scalar_t
                       cutlass::arch::Sm80,  // ArchTag
                       true,                 // Memory is aligned
                       kQueriesPerBlock, kKeysPerBlock, kSingleValueIteration,
@@ -65,8 +65,8 @@ void fusedMHACutlass(void* output, void* q, void* k, void* v, void* skip,
     p.value_ptr = mha_v;
     p.logsumexp_ptr = nullptr;  // Only needed for bw
     p.output_accum_ptr = nullptr;
-    p.output_ptr = (cutlass::half_t*)output;
-    p.attn_bias_ptr = (cutlass::half_t*)skip;
+    p.output_ptr = (ElementType*)output;
+    p.attn_bias_ptr = (ElementType*)skip;
 
     p.scale = 1.0f / sqrt((float)depth);
 
@@ -109,16 +109,31 @@ void fusedMHACutlass(void* output, void* q, void* k, void* v, void* skip,
   ReportCUDAErrors(cudaGetLastError());
 }
 
+template <typename DataType>
 void fusedMHA(void* output, void* mha_q, void* mha_k, void* mha_v, void* skip,
               int batch_size, int num_heads, int depth, cudaStream_t stream) {
+  using ElementType =
+      std::conditional_t<std::is_same<__nv_bfloat16, DataType>::value,
+                         cutlass::bfloat16_t, cutlass::half_t>;
   if (skip == nullptr) {
-    fusedMHACutlass<false>(output, mha_q, mha_k, mha_v, skip, batch_size,
-                           num_heads, depth, stream);
+    fusedMHACutlass<ElementType, false>(output, mha_q, mha_k, mha_v, skip,
+                                        batch_size, num_heads, depth, stream);
   } else {
-    fusedMHACutlass<true>(output, mha_q, mha_k, mha_v, skip, batch_size,
-                          num_heads, depth, stream);
+    fusedMHACutlass<ElementType, true>(output, mha_q, mha_k, mha_v, skip,
+                                       batch_size, num_heads, depth, stream);
   }
 }
+
+template void fusedMHA<half>(void* output, void* mha_q, void* mha_k,
+                             void* mha_v, void* skip, int batch_size,
+                             int num_heads, int depth, cudaStream_t stream);
+template void fusedMHA<__nv_bfloat16>(void* output, void* mha_q, void* mha_k,
+                                      void* mha_v, void* skip, int batch_size,
+                                      int num_heads, int depth,
+                                      cudaStream_t stream);
+template void fusedMHA<float>(void* output, void* mha_q, void* mha_k,
+                              void* mha_v, void* skip, int batch_size,
+                              int num_heads, int depth, cudaStream_t stream);
 
 }  // namespace cudnn_backend
 }  // namespace lczero

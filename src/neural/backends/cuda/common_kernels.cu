@@ -118,9 +118,9 @@ __global__ void addBiasBatched_kernel(T* output, const T* input, const T* bias,
   float b[4];
 
   // Load from memory
-  const bool fp16 = std::is_same<half, T>::value;
-  if (fp16) {
-    half inp[4];
+  constexpr bool is_16bit = sizeof(T) == 2;
+  if constexpr (is_16bit) {
+    T inp[4];
     copyAs<uint2>(&inp[0], &input[tensorIndex]);
 #pragma unroll
     for (int i = 0; i < 4; i++) val[i] = (float)inp[i];
@@ -142,10 +142,10 @@ __global__ void addBiasBatched_kernel(T* output, const T* input, const T* bias,
   }
 
   // write to memory
-  if (fp16) {
-    half op[4];
+  if constexpr (is_16bit) {
+    T op[4];
 #pragma unroll
-    for (int i = 0; i < 4; i++) op[i] = (half)val[i];
+    for (int i = 0; i < 4; i++) op[i] = (T)val[i];
     copyAs<uint2>(&output[tensorIndex], &op[0]);
   } else {
     copyAs<uint4>(&output[tensorIndex], &val[0]);
@@ -217,9 +217,9 @@ __global__ void addBiasBatched_kernel(T* output, const T* input, const T* bias,
   float b[4];
 
   // Load from memory
-  const bool fp16 = std::is_same<half, T>::value;
-  if (fp16) {
-    half inp[4];
+  constexpr bool is_16bit = sizeof(T) == 2;
+  if constexpr (is_16bit) {
+    T inp[4];
     copyAs<uint2>(&inp[0], &input[tensorIndex]);
 #pragma unroll
     for (int i = 0; i < 4; i++) val[i] = (float)inp[i];
@@ -241,10 +241,10 @@ __global__ void addBiasBatched_kernel(T* output, const T* input, const T* bias,
   }
 
   // write to memory
-  if (fp16) {
-    half op[4];
+  if constexpr (is_16bit) {
+    T op[4];
 #pragma unroll
-    for (int i = 0; i < 4; i++) op[i] = (half)val[i];
+    for (int i = 0; i < 4; i++) op[i] = (T)val[i];
     copyAs<uint2>(&output[tensorIndex], &op[0]);
   } else {
     copyAs<uint4>(&output[tensorIndex], &val[0]);
@@ -782,9 +782,9 @@ __global__ void softmax_opt_64_kernel(T* output, const T* input,
   float ex[2];
 
   // Load from memory
-  const bool fp16 = std::is_same<half, T>::value;
-  if (fp16) {
-    half inp[2];
+  constexpr bool is_16bit = sizeof(T) == 2;
+  if constexpr (is_16bit) {
+    T inp[2];
     copyAs<int>(&inp[0], &input[index * 2]);
     x[0] = (float)inp[0];
     x[1] = (float)inp[1];
@@ -804,7 +804,7 @@ __global__ void softmax_opt_64_kernel(T* output, const T* input,
     x[0] += x[2];
     x[1] += x[3];
   }
-  if (fp16) {
+  if constexpr (std::is_same<half, T>::value) {
     // Guard against Inf from fp16 overflow.
     x[0] = clamp(x[0], -kTwiceHalfMax, kTwiceHalfMax);
     x[1] = clamp(x[1], -kTwiceHalfMax, kTwiceHalfMax);
@@ -824,10 +824,10 @@ __global__ void softmax_opt_64_kernel(T* output, const T* input,
   ex[1] = ex[1] / Sum;
 
   // Store to memory
-  if (fp16) {
-    half op[2];
-    op[0] = (half)ex[0];
-    op[1] = (half)ex[1];
+  if constexpr (is_16bit) {
+    T op[2];
+    op[0] = (T)ex[0];
+    op[1] = (T)ex[1];
     copyAs<int>(&output[index * 2], &op[0]);
   } else {
     copyAs<uint2>(&output[index * 2], &ex[0]);
@@ -945,11 +945,11 @@ __global__ void layer_norm_kernel(int N, int C, T* output, const T* input,
   float val[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   float oth[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-  const bool fp16 = std::is_same<half, T>::value;
+  constexpr bool is_16bit = sizeof(T) == 2;
   if (!oobThread) {
     // Load from memory (16 elements a time)
-    if (fp16) {
-      half inp[8];
+    if constexpr (is_16bit) {
+      T inp[8];
       copyAs<uint4>(&inp[0], &input[tensorIndex]);
       for (int i = 0; i < 8; i++) val[i] = (float)inp[i];
       copyAs<uint4>(&inp[0], &input[tensorIndex + 8]);
@@ -975,8 +975,8 @@ __global__ void layer_norm_kernel(int N, int C, T* output, const T* input,
   if (!oobThread) {
     if (skip != nullptr) {
       // Load from memory (16 elements a time)
-      if (fp16) {
-        half inp[8];
+      if constexpr (is_16bit) {
+        T inp[8];
         copyAs<uint4>(&inp[0], &skip[tensorIndex]);
         for (int i = 0; i < 8; i++) oth[i] = (float)inp[i];
         copyAs<uint4>(&inp[0], &skip[tensorIndex + 8]);
@@ -1021,8 +1021,8 @@ __global__ void layer_norm_kernel(int N, int C, T* output, const T* input,
 
   if (!oobThread) {
     // Load from memory (16 elements a time)
-    if (fp16) {
-      half inp[8];
+    if constexpr (is_16bit) {
+      T inp[8];
       copyAs<uint4>(&inp[0], &gammas[biasIndex]);
       for (int i = 0; i < 8; i++) oth[i] = (float)inp[i];
       copyAs<uint4>(&inp[0], &gammas[biasIndex + 8]);
@@ -1045,8 +1045,8 @@ __global__ void layer_norm_kernel(int N, int C, T* output, const T* input,
 
   if (!oobThread) {
     // Load from memory (16 elements a time)
-    if (fp16) {
-      half inp[8];
+    if constexpr (is_16bit) {
+      T inp[8];
       copyAs<uint4>(&inp[0], &betas[biasIndex]);
       for (int i = 0; i < 8; i++) oth[i] = (float)inp[i];
       copyAs<uint4>(&inp[0], &betas[biasIndex + 8]);
@@ -1065,11 +1065,11 @@ __global__ void layer_norm_kernel(int N, int C, T* output, const T* input,
 
   if (!oobThread) {
     // Write to memory
-    if (fp16) {
-      half op[8];
-      for (int i = 0; i < 8; i++) op[i] = (half)val[i];
+    if constexpr (is_16bit) {
+      T op[8];
+      for (int i = 0; i < 8; i++) op[i] = (T)val[i];
       copyAs<uint4>(&output[tensorIndex], &op[0]);
-      for (int i = 0; i < 8; i++) op[i] = (half)val[i + 8];
+      for (int i = 0; i < 8; i++) op[i] = (T)val[i + 8];
       copyAs<uint4>(&output[tensorIndex + 8], &op[0]);
     } else {
       copyAs<uint4>(&output[tensorIndex], &val[0]);
@@ -1341,12 +1341,20 @@ void genOffsetPointers(T** offsets, int heads, int max_batch, int depth,
 // Template instantiation.
 template void copyTypeConverted<half, float>(half* op, float* ip, int N,
                                              cudaStream_t stream);
+template void copyTypeConverted<__nv_bfloat16, float>(__nv_bfloat16* op,
+                                                     float* ip, int N,
+                                                     cudaStream_t stream);
 template void copyTypeConverted<float, half>(float* op, half* ip, int N,
                                              cudaStream_t stream);
+template void copyTypeConverted<float, __nv_bfloat16>(float* op,
+                                                     __nv_bfloat16* ip, int N,
+                                                     cudaStream_t stream);
 template void copyTypeConverted<float, float>(float* op, float* ip, int N,
                                               cudaStream_t stream);
 template void copyTypeConverted<half, half>(half* op, half* ip, int N,
                                             cudaStream_t stream);
+template void copyTypeConverted<__nv_bfloat16, __nv_bfloat16>(
+    __nv_bfloat16* op, __nv_bfloat16* ip, int N, cudaStream_t stream);
 
 template void batchNorm<float>(float* output, const float* input,
                                const float* skipInput, int N, int C, int H,
@@ -1358,6 +1366,11 @@ template void batchNorm<half>(half* output, const half* input,
                               float* means, float* var_multipliers,
                               ActivationFunction activation,
                               cudaStream_t stream);
+template void batchNorm<__nv_bfloat16>(
+    __nv_bfloat16* output, const __nv_bfloat16* input,
+    const __nv_bfloat16* skipInput, int N, int C, int H, int W, float* means,
+    float* var_multipliers, ActivationFunction activation,
+    cudaStream_t stream);
 
 template void addVectors<float>(float* c, float* a, float* b, int size,
                                 int asize, int bsize, ActivationFunction act,
@@ -1365,11 +1378,17 @@ template void addVectors<float>(float* c, float* a, float* b, int size,
 template void addVectors<half>(half* c, half* a, half* b, int size, int asize,
                                int bsize, ActivationFunction act,
                                cudaStream_t stream);
+template void addVectors<__nv_bfloat16>(
+    __nv_bfloat16* c, __nv_bfloat16* a, __nv_bfloat16* b, int size, int asize,
+    int bsize, ActivationFunction act, cudaStream_t stream);
 
 template void addVectorsHNC_NHC<float>(float* a, float* b, int N, int H, int C,
                                        cudaStream_t stream);
 template void addVectorsHNC_NHC<half>(half* a, half* b, int N, int H, int C,
                                       cudaStream_t stream);
+template void addVectorsHNC_NHC<__nv_bfloat16>(__nv_bfloat16* a,
+                                              __nv_bfloat16* b, int N, int H,
+                                              int C, cudaStream_t stream);
 
 template void addBiasBatched<float>(float* output, const float* input,
                                     const float* bias, int Batch, int N, int C,
@@ -1379,6 +1398,10 @@ template void addBiasBatched<half>(half* output, const half* input,
                                    const half* bias, int Batch, int N, int C,
                                    ActivationFunction activation,
                                    cudaStream_t stream);
+template void addBiasBatched<__nv_bfloat16>(
+    __nv_bfloat16* output, const __nv_bfloat16* input,
+    const __nv_bfloat16* bias, int Batch, int N, int C,
+    ActivationFunction activation, cudaStream_t stream);
 
 template void addBiasBatched<float>(float* output, const float* input,
                                     const float* bias, int Batch, int N, int C,
@@ -1388,14 +1411,20 @@ template void addBiasBatched<half>(half* output, const half* input,
                                    const half* bias, int Batch, int N, int C,
                                    int Nstride, ActivationFunction activation,
                                    cudaStream_t stream);
+template void addBiasBatched<__nv_bfloat16>(
+    __nv_bfloat16* output, const __nv_bfloat16* input,
+    const __nv_bfloat16* bias, int Batch, int N, int C, int Nstride,
+    ActivationFunction activation, cudaStream_t stream);
 
 template void addBias_NCHW<float>(float* c, float* a, float* b, int N, int C,
                                   int H, int W, ActivationFunction activation,
                                   cudaStream_t stream);
-
 template void addBias_NCHW<half>(half* c, half* a, half* b, int N, int C, int H,
                                  int W, ActivationFunction activation,
                                  cudaStream_t stream);
+template void addBias_NCHW<__nv_bfloat16>(
+    __nv_bfloat16* c, __nv_bfloat16* a, __nv_bfloat16* b, int N, int C, int H,
+    int W, ActivationFunction activation, cudaStream_t stream);
 
 template void globalAvgPool<float>(int N, int C, float* output,
                                    const float* input,
@@ -1404,6 +1433,9 @@ template void globalAvgPool<float>(int N, int C, float* output,
 template void globalAvgPool<half>(int N, int C, half* output, const half* input,
                                   const half* prevLayerBias, bool nhwc,
                                   cudaStream_t stream);
+template void globalAvgPool<__nv_bfloat16>(
+    int N, int C, __nv_bfloat16* output, const __nv_bfloat16* input,
+    const __nv_bfloat16* prevLayerBias, bool nhwc, cudaStream_t stream);
 
 template void expandPlanes_NHWC<float>(float* output, const uint64_t* masks,
                                        const float* values, int n,
@@ -1411,6 +1443,9 @@ template void expandPlanes_NHWC<float>(float* output, const uint64_t* masks,
 template void expandPlanes_NHWC<half>(half* output, const uint64_t* masks,
                                       const half* values, int n,
                                       cudaStream_t stream);
+template void expandPlanes_NHWC<__nv_bfloat16>(
+    __nv_bfloat16* output, const uint64_t* masks, const __nv_bfloat16* values,
+    int n, cudaStream_t stream);
 
 template void expandPlanes_NCHW<float>(float* output, const uint64_t* masks,
                                        const float* values, int n,
@@ -1418,6 +1453,9 @@ template void expandPlanes_NCHW<float>(float* output, const uint64_t* masks,
 template void expandPlanes_NCHW<half>(half* output, const uint64_t* masks,
                                       const half* values, int n,
                                       cudaStream_t stream);
+template void expandPlanes_NCHW<__nv_bfloat16>(
+    __nv_bfloat16* output, const uint64_t* masks, const __nv_bfloat16* values,
+    int n, cudaStream_t stream);
 
 template void globalScale<float>(int N, int C, float* output,
                                  const float* input, const float* scaleBias,
@@ -1429,28 +1467,45 @@ template void globalScale<half>(int N, int C, half* output, const half* input,
                                 const half* prevLayerBias, bool nhwc,
                                 ActivationFunction activation,
                                 cudaStream_t stream);
+template void globalScale<__nv_bfloat16>(
+    int N, int C, __nv_bfloat16* output, const __nv_bfloat16* input,
+    const __nv_bfloat16* scaleBias, const __nv_bfloat16* prevLayerBias,
+    bool nhwc, ActivationFunction activation, cudaStream_t stream);
 
 template void PolicyMap<float>(int N, float* output, const float* input,
                                const short* indices, int inputSize,
                                int usedSize, int outputSize,
                                cudaStream_t stream);
-
 template void PolicyMap<half>(int N, half* output, const half* input,
                               const short* indices, int inputSize, int usedSize,
                               int outputSize, cudaStream_t stream);
+template void PolicyMap<__nv_bfloat16>(
+    int N, __nv_bfloat16* output, const __nv_bfloat16* input,
+    const short* indices, int inputSize, int usedSize, int outputSize,
+    cudaStream_t stream);
 
 template void FilterTransform<float>(int N, int C, float* transformedFilter,
                                      const float* filter, cudaStream_t stream);
+template void FilterTransform<__nv_bfloat16>(int N, int C,
+                                             __nv_bfloat16* transformedFilter,
+                                             const __nv_bfloat16* filter,
+                                             cudaStream_t stream);
 
 template void InputTransform<float, true>(int N, int C,
                                           float* transformed_input,
                                           const float* input,
                                           cudaStream_t stream);
+template void InputTransform<__nv_bfloat16, true>(
+    int N, int C, __nv_bfloat16* transformed_input, const __nv_bfloat16* input,
+    cudaStream_t stream);
 
 template void InputTransform<float, false>(int N, int C,
                                            float* transformed_input,
                                            const float* input,
                                            cudaStream_t stream);
+template void InputTransform<__nv_bfloat16, false>(
+    int N, int C, __nv_bfloat16* transformed_input, const __nv_bfloat16* input,
+    cudaStream_t stream);
 
 template void OutputTransform<float, true, ACTIVATION_RELU, true, true, false,
                               false>(int N, int C, int se_K, float* output,
@@ -1589,6 +1644,10 @@ template void OutputInputTransform<float, false, ACTIVATION_MISH, true, false>(
 
 template void Softmax<half>(int N, int C, half* output, const half* input,
                             const half* input2, cudaStream_t stream);
+template void Softmax<__nv_bfloat16>(int N, int C, __nv_bfloat16* output,
+                                    const __nv_bfloat16* input,
+                                    const __nv_bfloat16* input2,
+                                    cudaStream_t stream);
 template void Softmax<float>(int N, int C, float* output, const float* input,
                              const float* input2, cudaStream_t stream);
 
@@ -1597,6 +1656,14 @@ template void LayerNorm<half>(int N, int C, half* output, const half* input,
                               const half* gammas, const half* betas, float ep,
                               float alpha, ActivationFunction act,
                               cudaStream_t stream);
+template void LayerNorm<__nv_bfloat16>(int N, int C, __nv_bfloat16* output,
+                                      const __nv_bfloat16* input,
+                                      const __nv_bfloat16* bias,
+                                      const __nv_bfloat16* skip,
+                                      const __nv_bfloat16* gammas,
+                                      const __nv_bfloat16* betas, float ep,
+                                      float alpha, ActivationFunction act,
+                                      cudaStream_t stream);
 template void LayerNorm<float>(int N, int C, float* output, const float* input,
                                const float* bias, const float* skip,
                                const float* gammas, const float* betas,
@@ -1607,6 +1674,10 @@ template void ComputePromotionLogits<half>(int N, int C, half* output,
                                            const half* keys, const half* ppo,
                                            const half* policy_attn_logits,
                                            cudaStream_t stream);
+template void ComputePromotionLogits<__nv_bfloat16>(
+    int N, int C, __nv_bfloat16* output, const __nv_bfloat16* keys,
+    const __nv_bfloat16* ppo, const __nv_bfloat16* policy_attn_logits,
+    cudaStream_t stream);
 template void ComputePromotionLogits<float>(int N, int C, float* output,
                                             const float* keys, const float* ppo,
                                             const float* policy_attn_logits,
@@ -1616,6 +1687,9 @@ template void convertNCHWtoNHWC<half, float>(half* output_tensor,
                                              const float* input_tensor, int Nin,
                                              int Cin, int Nout, int Cout, int H,
                                              int W, cudaStream_t stream);
+template void convertNCHWtoNHWC<__nv_bfloat16, float>(
+    __nv_bfloat16* output_tensor, const float* input_tensor, int Nin, int Cin,
+    int Nout, int Cout, int H, int W, cudaStream_t stream);
 template void convertNCHWtoNHWC<float, float>(float* output_tensor,
                                               const float* input_tensor,
                                               int Nin, int Cin, int Nout,
@@ -1625,12 +1699,18 @@ template void convertNCHWtoNHWC<half, half>(half* output_tensor,
                                             const half* input_tensor, int Nin,
                                             int Cin, int Nout, int Cout, int H,
                                             int W, cudaStream_t stream);
+template void convertNCHWtoNHWC<__nv_bfloat16, __nv_bfloat16>(
+    __nv_bfloat16* output_tensor, const __nv_bfloat16* input_tensor, int Nin,
+    int Cin, int Nout, int Cout, int H, int W, cudaStream_t stream);
 
 template void inputPreprocessForAttentionBody<half>(
     half* output, const half* input, const half* encoding, int N,
     int input_size, int encoding_size, bool is_pe_dense_embedding,
     cudaStream_t stream);
-
+template void inputPreprocessForAttentionBody<__nv_bfloat16>(
+    __nv_bfloat16* output, const __nv_bfloat16* input,
+    const __nv_bfloat16* encoding, int N, int input_size, int encoding_size,
+    bool is_pe_dense_embedding, cudaStream_t stream);
 template void inputPreprocessForAttentionBody<float>(
     float* output, const float* input, const float* encoding, int N,
     int input_size, int encoding_size, bool is_pe_dense_embedding,
@@ -1640,7 +1720,12 @@ template void applyInputGating<half>(half* output, const half* input,
                                      const half* mult, const half* add, int N,
                                      int C, int output_size,
                                      cudaStream_t stream);
-
+template void applyInputGating<__nv_bfloat16>(__nv_bfloat16* output,
+                                             const __nv_bfloat16* input,
+                                             const __nv_bfloat16* mult,
+                                             const __nv_bfloat16* add, int N,
+                                             int C, int output_size,
+                                             cudaStream_t stream);
 template void applyInputGating<float>(float* output, const float* input,
                                       const float* mult, const float* add,
                                       int N, int C, int output_size,
@@ -1654,5 +1739,9 @@ template void genOffsetPointers<half>(half** offsets, int heads, int max_batch,
                                       int depth, int d_model, half* k, half* q,
                                       half* b1, half* v, half* b2,
                                       cudaStream_t stream);
+template void genOffsetPointers<__nv_bfloat16>(
+    __nv_bfloat16** offsets, int heads, int max_batch, int depth, int d_model,
+    __nv_bfloat16* k, __nv_bfloat16* q, __nv_bfloat16* b1, __nv_bfloat16* v,
+    __nv_bfloat16* b2, cudaStream_t stream);
 }  // namespace cudnn_backend
 }  // namespace lczero
