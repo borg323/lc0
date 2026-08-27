@@ -1203,6 +1203,11 @@ class CudaNetwork : public Network {
     CERR << "GPU clock frequency: " << clockRateMHz << " MHz";
     CERR << "GPU compute capability: " << deviceProp.major << "."
          << deviceProp.minor;
+    if (deviceProp.major >= 12) {
+      CERR << "Architecture: NVIDIA Blackwell (SM "
+           << deviceProp.major * 10 + deviceProp.minor
+           << ") - Native SM 120 Acceleration Active";
+    }
     CERR << "L2 cache capacity: " << deviceProp.l2CacheSize;
     if (std::is_same<float, DataType>::value && deviceProp.major >= 7) {
       CERR << "WARNING: you will probably get better performance from the "

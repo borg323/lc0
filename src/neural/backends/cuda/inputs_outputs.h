@@ -32,6 +32,7 @@
 
 #include "cuda_common.h"
 #include "neural/network.h"
+#include "utils/bf16_utils.h"
 #include "utils/bit.h"
 
 namespace lczero {
@@ -42,11 +43,19 @@ inline void ToType(half& dst, float src) {
   auto temp = FP32toFP16(src);
   dst = bit_cast<half>(temp);
 }
+inline void ToType(__nv_bfloat16& dst, float src) {
+  auto temp = FP32toBF16(src);
+  dst = bit_cast<__nv_bfloat16>(temp);
+}
 
 inline float FromType(float src) { return src; }
 inline float FromType(half src) {
   uint16_t temp = bit_cast<uint16_t>(src);
   return FP16toFP32(temp);
+}
+inline float FromType(__nv_bfloat16 src) {
+  uint16_t temp = bit_cast<uint16_t>(src);
+  return BF16toFP32(temp);
 }
 
 template <typename DataType>
