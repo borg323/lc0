@@ -27,6 +27,7 @@
 
 #pragma once
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -39,16 +40,13 @@ namespace lczero {
 // exponent and f the fraction (mantissa), f>=0. The constant k is used to tune
 // the approximation accuracy. In the final version some constants were slightly
 // modified for better accuracy with 32 bit floating point math.
-inline float FastLog2(const float a) {
-  uint32_t tmp;
-  std::memcpy(&tmp, &a, sizeof(float));
+inline float FastLog2(const float a) noexcept {
+  uint32_t tmp = std::bit_cast<uint32_t>(a);
   uint32_t expb = tmp >> 23;
   tmp = (tmp & 0x7fffff) | (0x7f << 23);
-  float out;
-  std::memcpy(&out, &tmp, sizeof(float));
-  out -= 1.0f;
+  float out = std::bit_cast<float>(tmp) - 1.0f;
   // Minimize max absolute error.
-  return out * (1.3465552f - 0.34655523f * out) - 127 + expb;
+  return out * (1.3465552f - 0.34655523f * out) - 127.0f + static_cast<float>(expb);
 }
 
 // Fast approximate 2^x. Does only limited range checking.
@@ -56,37 +54,35 @@ inline float FastLog2(const float a) {
 // integer and f the fractional part, f>=0. The constant k is used to tune the
 // approximation accuracy. In the final version some constants were slightly
 // modified for better accuracy with 32 bit floating point math.
-inline float FastExp2(const float a) {
+inline float FastExp2(const float a) noexcept {
   int32_t exp;
-  if (a < 0) {
-    if (a < -126) return 0.0;
+  if (a < 0.0f) {
+    if (a < -126.0f) return 0.0f;
     // Not all compilers optimize floor, so we use (a-1) here to round down.
     // This is obviously off-by-one for integer a, but fortunately the error
     // correction term gives the exact value for 1 (by design, for continuity).
-    exp = static_cast<int32_t>(a - 1);
+    exp = static_cast<int32_t>(a - 1.0f);
   } else {
     exp = static_cast<int32_t>(a);
   }
-  float out = a - exp;
+  float out = a - static_cast<float>(exp);
   // Minimize max relative error.
   out = 1.0f + out * (0.6602339f + 0.33976606f * out);
-  int32_t tmp;
-  std::memcpy(&tmp, &out, sizeof(float));
-  tmp += static_cast<int32_t>(static_cast<uint32_t>(exp) << 23);
-  std::memcpy(&out, &tmp, sizeof(float));
-  return out;
+  uint32_t tmp = std::bit_cast<uint32_t>(out);
+  tmp += static_cast<uint32_t>(exp) << 23;
+  return std::bit_cast<float>(tmp);
 }
 
 // Fast approximate ln(x). Does no range checking.
-inline float FastLog(const float a) {
+inline float FastLog(const float a) noexcept {
   return 0.6931471805599453f * FastLog2(a);
 }
 
 // Fast approximate exp(x). Does only limited range checking.
-inline float FastExp(const float a) { return FastExp2(1.442695040f * a); }
+inline float FastExp(const float a) noexcept { return FastExp2(1.442695040f * a); }
 
 // Safeguarded fast logistic function, based on FastExp().
-inline float FastLogistic(const float a) {
+inline float FastLogistic(const float a) noexcept {
   if (a > 20.0f) {return 1.0f;}
   if (a < -20.0f) {return 0.0f;}
   return 1.0f / (1.0f + FastExp(-a));

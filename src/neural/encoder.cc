@@ -273,19 +273,28 @@ InputPlanes EncodePositionForNN(
     }
 
     const int base = i * kPlanesPerBoard;
-    result[base + 0].mask = (board.ours() & board.pawns()).as_int();
-    result[base + 1].mask = (board.ours() & board.knights()).as_int();
-    result[base + 2].mask = (board.ours() & board.bishops()).as_int();
-    result[base + 3].mask = (board.ours() & board.rooks()).as_int();
-    result[base + 4].mask = (board.ours() & board.queens()).as_int();
-    result[base + 5].mask = (board.ours() & board.kings()).as_int();
+    const auto ours = board.ours();
+    const auto theirs = board.theirs();
+    const auto pawns = board.pawns();
+    const auto knights = board.knights();
+    const auto bishops = board.bishops();
+    const auto rooks = board.rooks();
+    const auto queens = board.queens();
+    const auto kings = board.kings();
 
-    result[base + 6].mask = (board.theirs() & board.pawns()).as_int();
-    result[base + 7].mask = (board.theirs() & board.knights()).as_int();
-    result[base + 8].mask = (board.theirs() & board.bishops()).as_int();
-    result[base + 9].mask = (board.theirs() & board.rooks()).as_int();
-    result[base + 10].mask = (board.theirs() & board.queens()).as_int();
-    result[base + 11].mask = (board.theirs() & board.kings()).as_int();
+    result[base + 0].mask = (ours & pawns).as_int();
+    result[base + 1].mask = (ours & knights).as_int();
+    result[base + 2].mask = (ours & bishops).as_int();
+    result[base + 3].mask = (ours & rooks).as_int();
+    result[base + 4].mask = (ours & queens).as_int();
+    result[base + 5].mask = (ours & kings).as_int();
+
+    result[base + 6].mask = (theirs & pawns).as_int();
+    result[base + 7].mask = (theirs & knights).as_int();
+    result[base + 8].mask = (theirs & bishops).as_int();
+    result[base + 9].mask = (theirs & rooks).as_int();
+    result[base + 10].mask = (theirs & queens).as_int();
+    result[base + 11].mask = (theirs & kings).as_int();
 
     if (repetitions >= 1) result[base + 12].SetAll();
 
@@ -619,7 +628,7 @@ uint16_t MoveToNNIndex(Move move, int transform) {
 }
 
 Move MoveFromNNIndex(int idx, int transform) {
-  std::string m_str = kMoveStrs[idx];
+  std::string_view m_str = kMoveStrs[idx];
   auto from = Square::Parse(m_str.substr(0, 2));
   auto to = Square::Parse(m_str.substr(2, 2));
   if (transform != 0) {
