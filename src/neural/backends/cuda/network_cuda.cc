@@ -250,6 +250,7 @@ class CudaNetwork : public Network {
 
     // Select GPU to run on (for *the current* thread).
     ReportCUDAErrors(cudaSetDevice(gpu_id_));
+    ReportCUDAErrors(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
 
     multi_stream_ = options.GetOrDefault<bool>("multi_stream", false);
 

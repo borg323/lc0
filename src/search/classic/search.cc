@@ -36,6 +36,7 @@
 #include <sstream>
 #include <thread>
 
+#include "absl/container/inlined_vector.h"
 #include "neural/encoder.h"
 #include "search/classic/node.h"
 #include "utils/fastmath.h"
@@ -201,7 +202,7 @@ Search::Search(const NodeTree& tree, Backend* backend,
 namespace {
 void ApplyDirichletNoise(Node* node, float eps, double alpha) {
   float total = 0;
-  std::vector<float> noise;
+  absl::InlinedVector<float, 64> noise;
 
   for (int i = 0; i < node->GetNumEdges(); ++i) {
     float eta = Random::Get().GetGamma(alpha, 1.0);
@@ -738,7 +739,7 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
   // * If two nodes have equal number:
   //   * If that number is 0, the one with larger prior wins.
   //   * If that number is larger than 0, the one with larger eval wins.
-  std::vector<EdgeAndNode> edges;
+  absl::InlinedVector<EdgeAndNode, 64> edges;
   for (auto& edge : parent->Edges()) {
     if (parent == root_node_ && !root_move_filter_.empty() &&
         std::find(root_move_filter_.begin(), root_move_filter_.end(),
@@ -820,7 +821,7 @@ std::vector<EdgeAndNode> Search::GetBestChildrenNoTemperature(Node* parent,
   if (count < static_cast<int>(edges.size())) {
     edges.resize(count);
   }
-  return edges;
+  return {edges.begin(), edges.end()};
 }
 
 // Returns a child with most visits.
@@ -835,7 +836,7 @@ EdgeAndNode Search::GetBestRootChildWithTemperature(float temperature) const {
   // Root is at even depth.
   const float draw_score = GetDrawScore(/* is_odd_depth= */ false);
 
-  std::vector<float> cumulative_sums;
+  absl::InlinedVector<float, 64> cumulative_sums;
   float sum = 0.0;
   float max_n = 0.0;
   const float offset = params_.GetTemperatureVisitOffset();
@@ -2077,7 +2078,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
 
   // Populate all subnodes and their scores.
   using ScoredEdge = std::pair<float, EdgeAndNode>;
-  std::vector<ScoredEdge> scores;
+  absl::InlinedVector<ScoredEdge, 64> scores;
   const float cpuct =
       ComputeCpuct(params_, node->GetN(), node == search_->root_node_);
   const float puct_mult =

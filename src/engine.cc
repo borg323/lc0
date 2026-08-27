@@ -240,7 +240,26 @@ void Engine::Go(const GoParams& params) {
   search_->StartSearch(params);
 }
 
-void Engine::EnsureReady() { isready_seen_ = true; }
+void Engine::EnsureReady() {
+  isready_seen_ = true;
+  UpdateBackendConfig();
+  EnsureSyzygyTablebasesLoaded();
+  if (backend_) {
+    try {
+      GameState dummy_state = MakeGameState(ChessBoard::kStartposFen, {});
+      auto warmup = backend_->CreateComputation();
+      if (warmup) {
+        warmup->AddInput(
+            EvalPosition{std::span<const Position>(&dummy_state.startpos, 1),
+                         {}},
+            {});
+        warmup->ComputeBlocking();
+      }
+    } catch (...) {
+      // Warmup is best effort.
+    }
+  }
+}
 
 void Engine::Wait() { search_->WaitSearch(); }
 
