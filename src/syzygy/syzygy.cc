@@ -69,14 +69,14 @@ namespace {
 #define TB_MAX_PAWN (TB_PIECES < 7 ? 256 : 861)
 
 #ifdef _WIN32
-typedef HANDLE map_t;
+using map_t = HANDLE;
 #define SEP_CHAR ';'
 #else
-typedef size_t map_t;
+using map_t = size_t;
 #define SEP_CHAR ':'
 #endif
 
-typedef uint64_t Key;
+using Key = uint64_t;
 
 constexpr const char* kSuffix[] = {".rtbw", ".rtbm", ".rtbz"};
 constexpr uint32_t kMagic[] = {0x5d23e871, 0x88ac504b, 0xa50c66d7};
@@ -1634,7 +1634,7 @@ int SyzygyTablebase::probe_dtz(const Position& pos, ProbeState* result) {
 //
 // A return value false indicates that not all probes were successful.
 bool SyzygyTablebase::root_probe(const Position& pos, bool has_repeated,
-                                 bool win_only, std::vector<Move>* safe_moves) {
+                                 bool win_only, MoveList* safe_moves) {
   ProbeState result;
   auto root_moves = pos.GetBoard().GenerateLegalMoves();
   // Obtain 50-move counter for the root position
@@ -1689,7 +1689,7 @@ bool SyzygyTablebase::root_probe(const Position& pos, bool has_repeated,
 //
 // A return value false indicates that not all probes were successful.
 bool SyzygyTablebase::root_probe_wdl(const Position& pos,
-                                     std::vector<Move>* safe_moves) {
+                                     MoveList* safe_moves) {
   static const int WDL_to_rank[] = {-1000, -899, 0, 899, 1000};
   auto root_moves = pos.GetBoard().GenerateLegalMoves();
   ProbeState result;

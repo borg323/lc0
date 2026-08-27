@@ -348,7 +348,7 @@ Pjrt::Pjrt(const char* library_path) : PjrtCommon(nullptr) {
                         "Unable to load PJRT library " +
                             std::string(library_path) + ": " + dlerror());
   }
-  typedef const PJRT_Api* (*PjrtApiFunc)();
+  using PjrtApiFunc = const PJRT_Api* (*)();
   auto func = reinterpret_cast<PjrtApiFunc>(dlsym(handle, "GetPjrtApi"));
   if (!func) {
     throw PjrtException(PjrtErrorCode::INVALID_ARGUMENT,

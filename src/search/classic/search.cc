@@ -604,7 +604,7 @@ void Search::SendMovesStats() const REQUIRES(counters_mutex_) {
 
 PositionHistory Search::GetPositionHistoryAtNode(const Node* node) const {
   PositionHistory history(played_history_);
-  std::vector<Move> rmoves;
+  MoveList rmoves;
   for (const Node* n = node; n != root_node_; n = n->GetParent()) {
     rmoves.push_back(n->GetOwnEdge()->GetMove());
   }
@@ -1512,7 +1512,7 @@ void SearchWorker::PickNodesToExtend(int collision_limit) {
     Mutex::Lock lock(picking_tasks_mutex_);
     task_added_.notify_all();
   }
-  std::vector<Move> empty_movelist;
+  MoveList empty_movelist;
   // This lock must be held until after the task_completed_ wait succeeds below.
   // Since the tasks perform work which assumes they have the lock, even though
   // actually this thread does.
@@ -1572,7 +1572,7 @@ void SearchWorker::EnsureNodeTwoFoldCorrectForDepth(Node* child_node,
 
 void SearchWorker::PickNodesToExtendTask(
     Node* node, int base_depth, int collision_limit,
-    const std::vector<Move>& moves_to_base,
+    const MoveList& moves_to_base,
     std::vector<NodeToProcess>* receiver,
     TaskWorkspace* workspace) NO_THREAD_SAFETY_ANALYSIS {
   LCTRACE_FUNCTION_SCOPE;
@@ -1919,7 +1919,7 @@ void SearchWorker::PickNodesToExtendTask(
 }
 
 void SearchWorker::ExtendNode(Node* node, int depth,
-                              const std::vector<Move>& moves_to_node,
+                              const MoveList& moves_to_node,
                               PositionHistory* history) {
   // Initialize position sequence with pre-move position.
   history->Trim(search_->played_history_.GetLength());
@@ -2076,7 +2076,7 @@ int SearchWorker::PrefetchIntoCache(Node* node, int budget, bool is_odd_depth) {
   if (node->IsTerminal()) return 0;
 
   // Populate all subnodes and their scores.
-  typedef std::pair<float, EdgeAndNode> ScoredEdge;
+  using ScoredEdge = std::pair<float, EdgeAndNode>;
   std::vector<ScoredEdge> scores;
   const float cpuct =
       ComputeCpuct(params_, node->GetN(), node == search_->root_node_);

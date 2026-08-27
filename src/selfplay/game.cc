@@ -281,7 +281,7 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
         }
       }
       // Append training data. The GameResult is later overwritten.
-      std::vector<Move> legal_moves = tree_[idx]
+      MoveList legal_moves = tree_[idx]
                                           ->GetPositionHistory()
                                           .Last()
                                           .GetBoard()
@@ -306,13 +306,13 @@ void SelfPlayGame::Play(int white_threads, int black_threads, bool training,
   }
 }
 
-std::vector<Move> SelfPlayGame::GetMoves() const {
-  std::vector<Move> moves;
+MoveList SelfPlayGame::GetMoves() const {
+  MoveList moves;
   for (classic::Node* node = tree_[0]->GetCurrentHead();
        node != tree_[0]->GetGameBeginNode(); node = node->GetParent()) {
     moves.push_back(node->GetParent()->GetEdgeToNode(node)->GetMove());
   }
-  std::vector<Move> result;
+  MoveList result;
   Position pos = tree_[0]->GetPositionHistory().Starting();
   while (!moves.empty()) {
     Move move = moves.back();

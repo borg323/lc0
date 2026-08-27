@@ -37,7 +37,7 @@ namespace lczero {
 // state. Somewhat mirrors usi `position <fen> moves ...` command.
 struct GameState {
   Position startpos;
-  std::vector<Move> moves;
+  MoveList moves;
 
   // Returns the position of the last move in the list.
   Position CurrentPosition() const;

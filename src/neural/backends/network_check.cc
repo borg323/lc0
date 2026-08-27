@@ -119,7 +119,7 @@ class CheckComputation : public NetworkComputation {
   std::vector<MoveList> moves_;
 
   std::vector<float> PolicySoftMax(const NetworkComputation* comp, int sample,
-                                   const std::vector<Move>& moves) const {
+                                   const MoveList& moves) const {
     float max_p = -std::numeric_limits<float>::infinity();
     std::vector<float> policy;
     policy.reserve(moves.size());

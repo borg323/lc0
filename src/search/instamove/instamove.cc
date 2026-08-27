@@ -127,7 +127,7 @@ class ValueHeadSearch : public InstamoveSearch {
 
     PositionHistory history(game_state.GetPositions());
     const ChessBoard& board = history.Last().GetBoard();
-    const std::vector<Move> legal_moves = board.GenerateLegalMoves();
+    const MoveList legal_moves = board.GenerateLegalMoves();
 
     struct Score {
       float negative_q;  // Negative because NN evaluates from opponent's

@@ -84,7 +84,7 @@ struct ThinkingInfo {
   // Number of successful TB probes (not the same as playouts ending in TB hit).
   int tb_hits = -1;
   // Best line found. Moves are from perspective of white player.
-  std::vector<Move> pv = {};
+  MoveList pv = {};
   // Multipv index.
   int multipv = -1;
   // Freeform comment.
@@ -110,7 +110,7 @@ struct GameInfo {
   // Initial fen of the game.
   std::string initial_fen;
   // Game moves.
-  std::vector<Move> moves;
+  MoveList moves;
   // Ply within moves that the game actually started.
   int play_start_ply;
   // Index of the game in the tournament (0-based).

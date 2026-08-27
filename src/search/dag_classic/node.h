@@ -231,7 +231,7 @@ struct NNEval {
   uint8_t num_edges = 0;
 };
 
-typedef std::pair<GameResult, GameResult> Bounds;
+using Bounds = std::pair<GameResult, GameResult>;
 
 enum class Terminal : uint8_t { NonTerminal, EndOfGame, Tablebase };
 
@@ -955,8 +955,7 @@ inline VisitedNode_Iterator<false> Node::VisitedNodes() {
 }
 
 // Transposition Table type for holding references to all low nodes in DAG.
-typedef absl::flat_hash_map<uint64_t, std::weak_ptr<LowNode>>
-    TranspositionTable;
+using TranspositionTable = absl::flat_hash_map<uint64_t, std::weak_ptr<LowNode>>;
 
 class NodeTree {
  public:
@@ -981,7 +980,7 @@ class NodeTree {
   Node* GetCurrentHead() const { return current_head_; }
   Node* GetGameBeginNode() const { return gamebegin_node_.get(); }
   const PositionHistory& GetPositionHistory() const { return history_; }
-  const std::vector<Move>& GetMoves() const { return moves_; }
+  const MoveList& GetMoves() const { return moves_; }
 
  private:
   void DeallocateTree();
@@ -990,7 +989,7 @@ class NodeTree {
   // Root node of a game tree.
   std::unique_ptr<Node> gamebegin_node_;
   PositionHistory history_;
-  std::vector<Move> moves_;
+  MoveList moves_;
 };
 
 // Implement thread local queues. It tracks GC thread to allow faster removal in

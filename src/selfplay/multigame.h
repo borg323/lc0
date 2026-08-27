@@ -39,7 +39,7 @@ class Evaluator {
   // Run before each batch before any Gather.
   void Reset(const PlayerOptions& player);
   // Run for each tree.
-  virtual void Gather(classic::NodeTree* tree, std::vector<Move> moves) = 0;
+  virtual void Gather(classic::NodeTree* tree, MoveList moves) = 0;
   // Run once between Gather and Move.
   void Run();
   // Run for each tree in the same order as Gather.
@@ -66,8 +66,8 @@ class MultiSelfPlayGames {
 
   GameResult GetGameResult(int index) const { return results_[index]; }
 
-  std::vector<Move> GetMoves(int index) const {
-    std::vector<Move> moves;
+  MoveList GetMoves(int index) const {
+    MoveList moves;
     bool flip = !trees_[index]->IsBlackToMove();
     for (classic::Node* node = trees_[index]->GetCurrentHead();
          node != trees_[index]->GetGameBeginNode(); node = node->GetParent()) {

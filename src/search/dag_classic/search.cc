@@ -1579,7 +1579,7 @@ void SearchWorker::PickNodesToExtend(int collision_limit)
     Mutex::Lock lock(picking_tasks_mutex_);
     task_added_.notify_all();
   }
-  std::vector<Move> empty_movelist;
+  MoveList empty_movelist;
   history_.Trim(search_->played_history_.GetLength());
   PickNodesToExtendTask({std::make_tuple(search_->root_node_, 0, 0)},
                         collision_limit, history_, &minibatch_,
@@ -2025,7 +2025,7 @@ void SearchWorker::ExtendNode(NodeToProcess& picked_node) {
   // We don't need the mutex because other threads will see that N=0 and
   // N-in-flight=1 and will not touch this node.
   const auto& board = history.Last().GetBoard();
-  std::vector<Move> legal_moves = board.GenerateLegalMoves();
+  MoveList legal_moves = board.GenerateLegalMoves();
 
   // Check whether it's a draw/lose by position. Importantly, we must check
   // these before doing the by-rule checks below.

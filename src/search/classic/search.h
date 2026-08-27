@@ -323,7 +323,7 @@ class SearchWorker {
     bool is_cache_hit = false;
     bool is_collision = false;
     // Only populated for visits,
-    std::vector<Move> moves_to_visit;
+    MoveList moves_to_visit;
 
     // Details that are filled in as we go.
     bool ooo_completed = false;
@@ -358,7 +358,7 @@ class SearchWorker {
     std::vector<std::unique_ptr<std::array<int, 256>>> visits_to_perform;
     std::vector<int> vtp_last_filled;
     std::vector<int> current_path;
-    std::vector<Move> moves_to_path;
+    MoveList moves_to_path;
     PositionHistory history;
     TaskWorkspace() {
       vtp_buffer.reserve(30);
@@ -378,7 +378,7 @@ class SearchWorker {
     Node* start;
     int base_depth;
     int collision_limit;
-    std::vector<Move> moves_to_base;
+    MoveList moves_to_base;
     std::vector<NodeToProcess> results;
 
     // Task type post gather processing.
@@ -387,7 +387,7 @@ class SearchWorker {
 
     bool complete = false;
 
-    PickTask(Node* node, uint16_t depth, const std::vector<Move>& base_moves,
+    PickTask(Node* node, uint16_t depth, const MoveList& base_moves,
              int collision_limit)
         : task_type(kGathering),
           start(node),
@@ -407,13 +407,13 @@ class SearchWorker {
   void PickNodesToExtend(int collision_limit);
   void PickNodesToExtendTask(Node* starting_point, int base_depth,
                              int collision_limit,
-                             const std::vector<Move>& moves_to_base,
+                             const MoveList& moves_to_base,
                              std::vector<NodeToProcess>* receiver,
                              TaskWorkspace* workspace);
   void EnsureNodeTwoFoldCorrectForDepth(Node* node, int depth);
   void ProcessPickedTask(int batch_start, int batch_end,
                          TaskWorkspace* workspace);
-  void ExtendNode(Node* node, int depth, const std::vector<Move>& moves_to_add,
+  void ExtendNode(Node* node, int depth, const MoveList& moves_to_add,
                   PositionHistory* history);
   void FetchSingleNodeResult(NodeToProcess* node_to_process);
   void RunTasks(int tid);

@@ -962,44 +962,44 @@ if get_option('gtest')
 
   test('ChessBoard',
     executable('chessboard_test', 'src/chess/board_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest] + deps + deps
   ), args: '--gtest_output=xml:chessboard.xml', timeout: 90)
 
   test('FP16',
     executable('fp16_test', 'src/utils/fp16_utils_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest] + deps + deps
   ), args: '--gtest_output=xml:fp16.xml', timeout: 90)
 
   test('HashCat',
     executable('hashcat_test', 'src/utils/hashcat_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest] + deps + deps
   ), args: '--gtest_output=xml:hashcat.xml', timeout: 90)
 
   test('PositionTest',
     executable('position_test', 'src/chess/position_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest] + deps + deps
   ), args: '--gtest_output=xml:position.xml', timeout: 90)
 
   test('OptionsParserTest',
     executable('optionsparser_test', 'src/utils/optionsparser_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest] + deps + deps
   ), args: '--gtest_output=xml:optionsparser.xml', timeout: 90)
 
   test('SyzygyTest',
     executable('syzygy_test', 'src/syzygy/syzygy_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest] + deps + deps
   ), args: '--gtest_output=xml:syzygy.xml', timeout: 90)
 
   test('EncodePositionForNN',
     executable('encoder_test', 'src/neural/encoder_test.cc', pb_files,
     include_directories: includes, link_with: lc0_lib,
-    dependencies: [gtest]
+    dependencies: [gtest] + deps
   ), args: '--gtest_output=xml:encoder.xml', timeout: 90)
 
   test('EngineTest',
     executable('engine_test', 'src/engine_test.cc', 'src/engine.cc',
                'src/neural/memcache.cc', pb_files,
-    include_directories: includes, link_with: lc0_lib, dependencies: [gtest, gmock]),
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest, gmock] + deps),
     args: '--gtest_output=xml:engine_test.xml', timeout: 90)
 endif
 

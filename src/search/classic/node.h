@@ -176,7 +176,7 @@ class alignas(64) Node {
   bool IsTerminal() const { return terminal_type_ != Terminal::NonTerminal; }
   bool IsTbTerminal() const { return terminal_type_ == Terminal::Tablebase; }
   bool IsTwoFoldTerminal() const { return terminal_type_ == Terminal::TwoFold; }
-  typedef std::pair<GameResult, GameResult> Bounds;
+  using Bounds = std::pair<GameResult, GameResult>;
   Bounds GetBounds() const { return {lower_bound_, upper_bound_}; }
   uint8_t GetNumEdges() const { return num_edges_; }
 

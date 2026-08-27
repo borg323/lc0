@@ -89,7 +89,7 @@ class SelfPlayGame {
   void WriteTrainingData(TrainingDataWriter* writer) const;
 
   GameResult GetGameResult() const { return game_result_; }
-  std::vector<Move> GetMoves() const;
+  MoveList GetMoves() const;
   // Gets the eval which required the biggest swing up to get the final outcome.
   // Eval is the expected outcome in the range 0<->1.
   float GetWorstEvalForWinnerOrDraw() const;

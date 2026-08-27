@@ -135,7 +135,7 @@ class NetworkAsBackendComputation : public BackendComputation {
   void SoftmaxPolicy(std::span<float> dst,
                      const NetworkComputation* computation, int idx) {
     LCTRACE_FUNCTION_SCOPE;
-    const std::vector<Move>& moves = entries_[idx].legal_moves;
+    const MoveList& moves = entries_[idx].legal_moves;
     const int transform = entries_[idx].transform;
     // Copy the values to the destination array and compute the maximum.
     const float max_p = std::accumulate(

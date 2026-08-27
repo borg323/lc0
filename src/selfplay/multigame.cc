@@ -35,7 +35,7 @@ void Evaluator::Reset(const PlayerOptions& player) {
 
 class PolicyEvaluator : public Evaluator {
  public:
-  void Gather(classic::NodeTree* tree, std::vector<Move> moves) override {
+  void Gather(classic::NodeTree* tree, MoveList moves) override {
     const auto& history = tree->GetPositionHistory();
     v_.emplace(moves.size());
     comp_->AddInput(
@@ -61,7 +61,7 @@ class PolicyEvaluator : public Evaluator {
 
 class ValueEvaluator : public Evaluator {
  public:
-  void Gather(classic::NodeTree* tree, std::vector<Move> moves) override {
+  void Gather(classic::NodeTree* tree, MoveList moves) override {
     PositionHistory history = tree->GetPositionHistory();
     v_.emplace(moves.size());
     for (size_t idx = 0; idx < moves.size(); idx++) {

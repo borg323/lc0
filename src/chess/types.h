@@ -31,6 +31,8 @@
 #include <string>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
+
 namespace lczero {
 
 struct PieceType {
@@ -240,6 +242,6 @@ inline std::string Move::ToString(bool is_chess960) const {
          (is_promotion() ? promotion().ToString(false) : "");
 }
 
-using MoveList = std::vector<Move>;
+using MoveList = absl::InlinedVector<Move, 256>;
 
 }  // namespace lczero

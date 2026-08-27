@@ -177,15 +177,21 @@ __global__ void filterTransform_kernel(int K, int C, int elements,
     }
 }
 
-#define INDEX_NCHW(n, c, h, w) ((n)*C * 8 * 8 + (c)*8 * 8 + (h)*8 + w)
-#define INDEX_NHCW(n, c, h, w) ((n)*C * 8 * 8 + (h)*C * 8 + (c)*8 + w)
+__device__ __forceinline__ int index_nchw(int n, int c, int h, int w, int C) {
+  return (n) * C * 8 * 8 + (c) * 8 * 8 + (h) * 8 + w;
+}
+
+__device__ __forceinline__ int index_nhcw(int n, int c, int h, int w, int C) {
+  return (n) * C * 8 * 8 + (h) * C * 8 + (c) * 8 + w;
+}
 
 // index in intermediate/temp tensor
 // W, H == 6 here! (6x6 transformed blocks)
 // N also includes part of dimension (2x2)
-#define GemmN (N * 4)
-#define TEMP_INDEX_HWNC(h, w, n, c) \
-  ((h)*6 * GemmN * C + (w)*GemmN * C + (n)*C + c)
+__device__ __forceinline__ int temp_index_hwnc(int h, int w, int n, int c, int N, int C) {
+  int GemmN = N * 4;
+  return (h) * 6 * GemmN * C + (w) * GemmN * C + (n) * C + c;
+}
 
 // 'C' threads per block
 // 'N' blocks
@@ -204,13 +210,13 @@ __device__ void InputTransform_kernel(int N, int C, const T* input, T* output) {
 #pragma unroll
   for (int y = 0; y < 8; y++) {
     if (nhcw) {
-      *((uint4*)(&board[y][0])) = *((uint4*)(&input[INDEX_NHCW(n, c, y, 0)]));
+      *((uint4*)(&board[y][0])) = *((uint4*)(&input[index_nhcw(n, c, y, 0, C)]));
       if (!fp16)
-        *((uint4*)(&board[y][4])) = *((uint4*)(&input[INDEX_NHCW(n, c, y, 4)]));
+        *((uint4*)(&board[y][4])) = *((uint4*)(&input[index_nhcw(n, c, y, 4, C)]));
     } else {
-      *((uint4*)(&board[y][0])) = *((uint4*)(&input[INDEX_NCHW(n, c, y, 0)]));
+      *((uint4*)(&board[y][0])) = *((uint4*)(&input[index_nchw(n, c, y, 0, C)]));
       if (!fp16)
-        *((uint4*)(&board[y][4])) = *((uint4*)(&input[INDEX_NCHW(n, c, y, 4)]));
+        *((uint4*)(&board[y][4])) = *((uint4*)(&input[index_nchw(n, c, y, 4, C)]));
     }
   }
 
@@ -230,7 +236,7 @@ __device__ void InputTransform_kernel(int N, int C, const T* input, T* output) {
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 0, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 0, c, N, C)] = inEl[y][x];
   }
 
   // top-right
@@ -249,7 +255,7 @@ __device__ void InputTransform_kernel(int N, int C, const T* input, T* output) {
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 1, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 1, c, N, C)] = inEl[y][x];
   }
 
   // bottom-left
@@ -268,7 +274,7 @@ __device__ void InputTransform_kernel(int N, int C, const T* input, T* output) {
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 2, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 2, c, N, C)] = inEl[y][x];
   }
 
   // bottom-right
@@ -287,7 +293,7 @@ __device__ void InputTransform_kernel(int N, int C, const T* input, T* output) {
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 3, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 3, c, N, C)] = inEl[y][x];
   }
 }
 
@@ -325,7 +331,7 @@ __device__ void OutputTransform_kernel(int N, int C, int se_K, T* output,
       for (int y = 0; y < 6; y++)
 #pragma unroll
         for (int x = 0; x < 6; x++)
-          outElTransformed[y][x] = input[TEMP_INDEX_HWNC(y, x, shln, k)];
+          outElTransformed[y][x] = input[temp_index_hwnc(y, x, shln, k, N, C)];
 
       // ii) transform it
       T outEl[4][4];
@@ -394,13 +400,13 @@ __device__ void OutputTransform_kernel(int N, int C, int se_K, T* output,
     if (use_skip) {
       T skipInp[8];
       if (skipInput_nhcw) {
-        *((uint4*)(&skipInp[0])) = *((uint4*)(&skip[INDEX_NHCW(n, k, h, 0)]));
+        *((uint4*)(&skipInp[0])) = *((uint4*)(&skip[index_nhcw(n, k, h, 0, C)]));
         if (!fp16)
-          *((uint4*)(&skipInp[4])) = *((uint4*)(&skip[INDEX_NHCW(n, k, h, 4)]));
+          *((uint4*)(&skipInp[4])) = *((uint4*)(&skip[index_nhcw(n, k, h, 4, C)]));
       } else {
-        *((uint4*)(&skipInp[0])) = *((uint4*)(&skip[INDEX_NCHW(n, k, h, 0)]));
+        *((uint4*)(&skipInp[0])) = *((uint4*)(&skip[index_nchw(n, k, h, 0, C)]));
         if (!fp16)
-          *((uint4*)(&skipInp[4])) = *((uint4*)(&skip[INDEX_NCHW(n, k, h, 4)]));
+          *((uint4*)(&skipInp[4])) = *((uint4*)(&skip[index_nchw(n, k, h, 4, C)]));
       }
 #pragma unroll
       for (int w = 0; w < 8; w++) board[h][w] += skipInp[w];
@@ -415,13 +421,13 @@ __device__ void OutputTransform_kernel(int N, int C, int se_K, T* output,
 
     // Write to output (use 128 bit writes to store one row a time)
     if (output_nhcw) {
-      *((uint4*)(&output[INDEX_NHCW(n, k, h, 0)])) = *((uint4*)&board[h][0]);
+      *((uint4*)(&output[index_nhcw(n, k, h, 0, C)])) = *((uint4*)&board[h][0]);
       if (!fp16)
-        *((uint4*)(&output[INDEX_NHCW(n, k, h, 4)])) = *((uint4*)&board[h][4]);
+        *((uint4*)(&output[index_nhcw(n, k, h, 4, C)])) = *((uint4*)&board[h][4]);
     } else {
-      *((uint4*)(&output[INDEX_NCHW(n, k, h, 0)])) = *((uint4*)&board[h][0]);
+      *((uint4*)(&output[index_nchw(n, k, h, 0, C)])) = *((uint4*)&board[h][0]);
       if (!fp16)
-        *((uint4*)(&output[INDEX_NCHW(n, k, h, 4)])) = *((uint4*)&board[h][4]);
+        *((uint4*)(&output[index_nchw(n, k, h, 4, C)])) = *((uint4*)&board[h][4]);
     }
   }
 #endif
@@ -501,7 +507,7 @@ __global__ __launch_bounds__(
       for (int y = 0; y < 6; y++)
 #pragma unroll
         for (int x = 0; x < 6; x++)
-          outElTransformed[y][x] = input[TEMP_INDEX_HWNC(y, x, shln, k)];
+          outElTransformed[y][x] = input[temp_index_hwnc(y, x, shln, k, N, C)];
 
       // ii) transform it
       T outEl[4][4];
@@ -581,8 +587,8 @@ __global__ __launch_bounds__(
     // residual add
     if (use_skip) {
       T skipInp[8];
-      copyAs<uint4>(&skipInp[0], &skip[INDEX_NHCW(n, k, h, 0)]);
-      if (!fp16) copyAs<uint4>(&skipInp[4], &skip[INDEX_NHCW(n, k, h, 4)]);
+      copyAs<uint4>(&skipInp[0], &skip[index_nhcw(n, k, h, 0, C)]);
+      if (!fp16) copyAs<uint4>(&skipInp[4], &skip[index_nhcw(n, k, h, 4, C)]);
 #pragma unroll
       for (int w = 0; w < 8; w++) board[h][w] += skipInp[w];
     }
@@ -597,8 +603,8 @@ __global__ __launch_bounds__(
     // write un-transformed output to 'skip' if required
     if (use_skip) {
       // Write to skip (use 128 bit writes to store one row a time)
-      copyAs<uint4>(&skip[INDEX_NHCW(n, k, h, 0)], &board[h][0]);
-      if (!fp16) copyAs<uint4>(&skip[INDEX_NHCW(n, k, h, 4)], &board[h][4]);
+      copyAs<uint4>(&skip[index_nhcw(n, k, h, 0, C)], &board[h][0]);
+      if (!fp16) copyAs<uint4>(&skip[index_nhcw(n, k, h, 4, C)], &board[h][4]);
     }
   }
 
@@ -621,7 +627,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 0, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 0, c, N, C)] = inEl[y][x];
   }
 
   // top-right
@@ -640,7 +646,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 1, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 1, c, N, C)] = inEl[y][x];
   }
 
   // bottom-left
@@ -659,7 +665,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 2, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 2, c, N, C)] = inEl[y][x];
   }
 
   // bottom-right
@@ -678,7 +684,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 3, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 3, c, N, C)] = inEl[y][x];
   }
 #endif
 }
@@ -704,8 +710,8 @@ __global__ __launch_bounds__(
   T skipInp[8][8];
 #pragma unroll
   for (int h = 0; h < 8; h++) {
-    copyAs<uint4>(&skipInp[h][0], &skip[INDEX_NHCW(n, k, h, 0)]);
-    if (!fp16) copyAs<uint4>(&skipInp[h][4], &skip[INDEX_NHCW(n, k, h, 4)]);
+    copyAs<uint4>(&skipInp[h][0], &skip[index_nhcw(n, k, h, 0, C)]);
+    if (!fp16) copyAs<uint4>(&skipInp[h][4], &skip[index_nhcw(n, k, h, 4, C)]);
   }
 
 #pragma unroll
@@ -719,7 +725,7 @@ __global__ __launch_bounds__(
       for (int y = 0; y < 6; y++)
 #pragma unroll
         for (int x = 0; x < 6; x++)
-          outElTransformed[y][x] = input[TEMP_INDEX_HWNC(y, x, shln, k)];
+          outElTransformed[y][x] = input[temp_index_hwnc(y, x, shln, k, N, C)];
 
       // ii) transform it
       T outEl[4][4];
@@ -756,8 +762,8 @@ __global__ __launch_bounds__(
     // write un-transformed output to 'skip' if required
     if (use_skip) {
       // Write to skip (use 128 bit writes to store one row a time)
-      copyAs<uint4>(&skip[INDEX_NHCW(n, k, h, 0)], &board[h][0]);
-      if (!fp16) copyAs<uint4>(&skip[INDEX_NHCW(n, k, h, 4)], &board[h][4]);
+      copyAs<uint4>(&skip[index_nhcw(n, k, h, 0, C)], &board[h][0]);
+      if (!fp16) copyAs<uint4>(&skip[index_nhcw(n, k, h, 4, C)], &board[h][4]);
     }
   }
 
@@ -780,7 +786,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 0, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 0, c, N, C)] = inEl[y][x];
   }
 
   // top-right
@@ -799,7 +805,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 1, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 1, c, N, C)] = inEl[y][x];
   }
 
   // bottom-left
@@ -818,7 +824,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 2, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 2, c, N, C)] = inEl[y][x];
   }
 
   // bottom-right
@@ -837,7 +843,7 @@ __global__ __launch_bounds__(
     for (int y = 0; y < 6; y++)
 #pragma unroll
       for (int x = 0; x < 6; x++)
-        output[TEMP_INDEX_HWNC(y, x, n * 4 + 3, c)] = inEl[y][x];
+        output[temp_index_hwnc(y, x, n * 4 + 3, c, N, C)] = inEl[y][x];
   }
 #endif
 }

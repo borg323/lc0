@@ -72,22 +72,22 @@ std::vector<int> ParseIntList(const std::string& str) {
   return result;
 }
 
-std::string LeftTrim(std::string str) {
+std::string_view LeftTrim(std::string_view str) {
   const auto it = std::find_if(str.begin(), str.end(),
                          [](int ch) { return !std::isspace(ch); });
-  str.erase(str.begin(), it);
+  str.remove_prefix(std::distance(str.begin(), it));
   return str;
 }
 
-std::string RightTrim(std::string str) {
+std::string_view RightTrim(std::string_view str) {
   auto it = std::find_if(str.rbegin(), str.rend(),
                          [](int ch) { return !std::isspace(ch); });
-  str.erase(it.base(), str.end());
+  str.remove_suffix(std::distance(str.rbegin(), it));
   return str;
 }
 
-std::string Trim(std::string str) {
-  return LeftTrim(RightTrim(std::move(str)));
+std::string_view Trim(std::string_view str) {
+  return LeftTrim(RightTrim(str));
 }
 
 bool StringsEqualIgnoreCase(const std::string& a, const std::string& b) {

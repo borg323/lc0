@@ -28,6 +28,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace lczero {
@@ -47,13 +48,13 @@ std::vector<std::string> StrSplit(const std::string& str,
 std::vector<int> ParseIntList(const std::string& str);
 
 // Trims a string of whitespace from the start.
-std::string LeftTrim(std::string str);
+std::string_view LeftTrim(std::string_view str);
 
 // Trims a string of whitespace from the end.
-std::string RightTrim(std::string str);
+std::string_view RightTrim(std::string_view str);
 
 // Trims a string of whitespace from both ends.
-std::string Trim(std::string str);
+std::string_view Trim(std::string_view str);
 
 // Returns whether strings are equal, ignoring case.
 bool StringsEqualIgnoreCase(const std::string& a, const std::string& b);

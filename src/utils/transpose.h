@@ -39,7 +39,7 @@ namespace lczero {
 // @order -- New-to-old dimension index mapping. For example {3, 2, 0, 1}
 template <class T>
 void TransposeTensor(const std::vector<int>& dims, std::vector<int> order,
-                     const std::vector<T> from, T* to) {
+                     const std::vector<T>& from, T* to) {
   assert(from.size() == std::accumulate(dims.begin(), dims.end(), 1u,
                                         std::multiplies<size_t>()));
   if (order.empty()) {

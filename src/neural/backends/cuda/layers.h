@@ -38,7 +38,7 @@
 #ifdef USE_CUDNN
 #include <cudnn.h>
 #else
-typedef void* cudnnHandle_t;
+using cudnnHandle_t = void*;
 #endif
 
 namespace lczero {

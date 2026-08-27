@@ -68,7 +68,7 @@ struct DXAlloc {
   D3D12_GPU_DESCRIPTOR_HANDLE desc_handle_scalar;
 };
 
-typedef uint16_t dx_half;
+using dx_half = uint16_t;
 
 inline int DivUp(int a, int b) { return (a + b - 1) / b; }
 
