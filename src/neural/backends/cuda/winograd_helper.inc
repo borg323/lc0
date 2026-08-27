@@ -193,6 +193,10 @@ __device__ __forceinline__ int temp_index_hwnc(int h, int w, int n, int c, int N
   return (h) * 6 * GemmN * C + (w) * GemmN * C + (n) * C + c;
 }
 
+#define INDEX_NCHW(n, c, h, w) index_nchw(n, c, h, w, C)
+#define INDEX_NHCW(n, c, h, w) index_nhcw(n, c, h, w, C)
+#define TEMP_INDEX_HWNC(h, w, n, c) temp_index_hwnc(h, w, n, c, N, C)
+
 // 'C' threads per block
 // 'N' blocks
 // every thread transforms an entire board/plane (8x8 elements)
