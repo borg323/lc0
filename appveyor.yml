@@ -5,22 +5,22 @@ image:
 - Visual Studio 2019
 environment:
   matrix:
-  - NAME: gpu-nvidia-cudnn
-  - NAME: gpu-nvidia-cuda12
+#  - NAME: gpu-nvidia-cudnn
+#  - NAME: gpu-nvidia-cuda12
 #  - NAME: gpu-dx12
 #  - NAME: gpu-opencl
-  - NAME: cpu-dnnl
-  - NAME: cpu-openblas
+#  - NAME: cpu-dnnl
+#  - NAME: cpu-openblas
 #  - NAME: onednn
-  - NAME: onnx
-  - NAME: android
+#  - NAME: onnx
+#  - NAME: android
   - NAME: gpu-nvidia-cuda11
 for:
 -
   matrix:
     only:
     - NAME: gpu-nvidia-cudnn
-    - NAME: gpu-nvidia-cuda11
+#    - NAME: gpu-nvidia-cuda11
 #    - NAME: gpu-opencl
     - NAME: cpu-dnnl
     - NAME: cpu-openblas
