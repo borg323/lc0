@@ -61,6 +61,7 @@ class ShaderWrapper {
   // Only expand planes has different shaders for different datatypes.
   //  - Mostly a meaningless 'early' optimization as this shouldn't be the bottleneck.
   ID3D12PipelineState* expand_planes_fp16_;
+  ID3D12PipelineState* expand_planes_bf16_;
   ID3D12PipelineState* expand_planes_fp32_;
 
   ID3D12PipelineState* winograd_input_transform_;
@@ -101,7 +102,7 @@ class ShaderWrapper {
 
   void ExpandPlanes(ID3D12GraphicsCommandList4* command_list,
                     DXAlloc output_tensor, DXAlloc masks, DXAlloc values,
-                    int batchSize, bool fp16);
+                    int batchSize, bool fp16, bool bf16 = false);
 
   void InputTransform(ID3D12GraphicsCommandList4* command_list,
                       DXAlloc transformed_input, DXAlloc input, int N, int C,

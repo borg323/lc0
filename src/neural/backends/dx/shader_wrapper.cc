@@ -121,6 +121,11 @@ void ShaderWrapper::Init(ID3D12Device* device) {
   ReportDxErrors(device->CreateComputePipelineState(
       &state_desc, IID_PPV_ARGS(&expand_planes_fp16_)));
 
+  state_desc.CS = {g_ExpandPlanes_shader_bf16,
+                   sizeof(g_ExpandPlanes_shader_bf16)};
+  ReportDxErrors(device->CreateComputePipelineState(
+      &state_desc, IID_PPV_ARGS(&expand_planes_bf16_)));
+
   state_desc.CS = {g_ExpandPlanes_shader_fp32,
                    sizeof(g_ExpandPlanes_shader_fp32)};
   ReportDxErrors(device->CreateComputePipelineState(
@@ -180,6 +185,7 @@ void ShaderWrapper::Init(ID3D12Device* device) {
 
 void ShaderWrapper::Destroy() {
   expand_planes_fp16_->Release();
+  expand_planes_bf16_->Release();
   expand_planes_fp32_->Release();
 
   winograd_input_transform_->Release();
@@ -212,12 +218,14 @@ void ShaderWrapper::Destroy() {
 
 void ShaderWrapper::ExpandPlanes(ID3D12GraphicsCommandList4* command_list,
                                  DXAlloc output_tensor, DXAlloc masks,
-                                 DXAlloc values, int batchSize, bool fp16) {
+                                 DXAlloc values, int batchSize, bool fp16,
+                                 bool bf16) {
   const int N = batchSize * kInputPlanes;
   int consts[] = {N, kInputPlanes};
   command_list->SetComputeRootSignature(root_sign_);
-  command_list->SetPipelineState(fp16 ? expand_planes_fp16_
-                                      : expand_planes_fp32_);
+  command_list->SetPipelineState(bf16 ? expand_planes_bf16_
+                              : fp16 ? expand_planes_fp16_
+                                     : expand_planes_fp32_);
   command_list->SetComputeRootUnorderedAccessView(0, output_tensor.gpu_va);
   command_list->SetComputeRootUnorderedAccessView(1, masks.gpu_va);
   command_list->SetComputeRootUnorderedAccessView(2, values.gpu_va);

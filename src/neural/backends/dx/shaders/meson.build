@@ -47,6 +47,12 @@ files += custom_target('ExpandPlanes_shader_fp16',
     command : [dxc_helper, '/EExpandPlanes_shader_fp16'] + dxc_common
 )
 
+files += custom_target('ExpandPlanes_shader_bf16',
+    output : 'ExpandPlanes_shader_bf16.h',
+    input : 'ExpandPlanes.hlsl',
+    command : [dxc_helper, '/EExpandPlanes_shader_bf16'] + dxc_common
+)
+
 files += custom_target('input_transform_shader_fp32',
     output : 'input_transform_shader_fp32.h',
     input : 'WinogradTransform.hlsl',
@@ -180,4 +186,3 @@ files += custom_target('se_1024',
     input : 'SE.hlsl',
     command : [dxc_helper, '/ESE', '/Vn', 'g_se_1024', '/DBLOCK_SIZE=1024'] + dxc_common
 )
-
