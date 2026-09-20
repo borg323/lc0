@@ -800,6 +800,9 @@ if get_option('build_backends')
                      include_directories: onnx_includes)
       # The header is not actually needed, used here to detect DML onnxruntime.
       onnx_conf.set('USE_DML', true)
+      if host_machine.system() == 'windows' and get_option('dx')
+        onnx_files += ['src/neural/backends/dx/network_dml.cc']
+      endif
     endif
     if cc.find_library('onnxruntime_providers_rocm',
                        dirs: get_option('onnx_libdir'), required: false).found()
