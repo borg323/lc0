@@ -174,6 +174,7 @@ class DxContext {
   ~DxContext();
 
   ID3D12Device5* getDevice() { return device_; }
+  ID3D12CommandQueue* getCommandQueue() { return command_queue_; }
   ID3D12GraphicsCommandList4* getCommandList() { return command_list_; }
   ShaderWrapper* getShaderWrapper() { return &shader_wrapper_; }
 

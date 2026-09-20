@@ -28,11 +28,13 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "onnx_conf.h"
 #ifdef USE_DML
+#include <libloaderapi.h>
+
+#include "dml_provider_factory.h"
 #include "neural/backends/dx/network_dx.h"
 #include "neural/factory.h"
 #include "neural/loader.h"
@@ -43,25 +45,102 @@
 #include "utils/bititer.h"
 #include "utils/exception.h"
 #include "utils/fp16_utils.h"
+#include "utils/logging.h"
+
 namespace lczero {
 namespace dx_dml_backend {
+using dx_backend::DXAlloc;
 using dx_backend::DxContext;
+
+namespace {
+
 static constexpr int kNumOutputPolicy = 1858;
+
+void ReleaseAlloc(DXAlloc& alloc) {
+  if (alloc.resource) {
+    alloc.resource->Release();
+    alloc.resource = nullptr;
+  }
+}
+
+const OrtDmlApi* GetDmlApi() {
+  const void* provider_api = nullptr;
+  Ort::ThrowOnError(OrtGetApiBase()->GetApi(ORT_API_VERSION)
+                        ->GetExecutionProviderApi("DML", ORT_API_VERSION,
+                                                  &provider_api));
+  return static_cast<const OrtDmlApi*>(provider_api);
+}
+
+using DmlCreateDeviceFn = HRESULT(WINAPI*)(IUnknown* d3d12_device,
+                                           DML_CREATE_DEVICE_FLAGS flags,
+                                           REFIID riid, void** dml_device);
+
+DmlCreateDeviceFn GetDmlCreateDeviceFn() {
+  static DmlCreateDeviceFn fn = []() -> DmlCreateDeviceFn {
+    HMODULE module = GetModuleHandleW(L"DirectML.dll");
+    if (!module) module = LoadLibraryW(L"DirectML.dll");
+    if (!module) {
+      throw Exception("Failed to load DirectML.dll for dml-dx12 backend.");
+    }
+    auto proc = reinterpret_cast<DmlCreateDeviceFn>(
+        GetProcAddress(module, "DMLCreateDevice"));
+    if (!proc) {
+      throw Exception("Failed to resolve DMLCreateDevice from DirectML.dll.");
+    }
+    return proc;
+  }();
+  return fn;
+}
+
+IDMLDevice* CreateDmlDevice(ID3D12Device* device) {
+  IDMLDevice* dml_device = nullptr;
+  ReportDxErrors(GetDmlCreateDeviceFn()(
+      device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&dml_device)));
+  return dml_device;
+}
+
+template <typename DataType>
+void CopyOutputChunk(void* dst, const void* src, size_t offset_elements,
+                     size_t count_elements) {
+  std::memcpy(static_cast<char*>(dst) + offset_elements * sizeof(DataType), src,
+              count_elements * sizeof(DataType));
+}
+
+void IgnoreOrtStatus(OrtStatus* status) {
+  if (status) {
+    OrtGetApiBase()->GetApi(ORT_API_VERSION)->ReleaseStatus(status);
+  }
+}
+
+}  // namespace
+
 class DmlDxNetwork;
+
 struct DmlInputsOutputs {
   explicit DmlInputsOutputs(DmlDxNetwork* network);
-  ~DmlInputsOutputs() {
-    free(input_tensor_data_);
-    for (void* ptr : output_tensors_data_) {
-      free(ptr);
-    }
-  }
-  void* input_tensor_data_;
+  ~DmlInputsOutputs();
+
+  bool gpu_interop_ = false;
+  const OrtDmlApi* dml_api_ = nullptr;
+
+  DXAlloc input_masks_mem_gpu_{};
+  DXAlloc input_val_mem_gpu_{};
+  DXAlloc input_tensor_gpu_{};
+  uint64_t* input_masks_mem_ = nullptr;
+  float* input_val_mem_ = nullptr;
+  void* input_tensor_data_ = nullptr;
+  void* input_ort_allocation_ = nullptr;
+
+  std::vector<DXAlloc> output_tensors_gpu_;
+  std::vector<void*> output_tensors_gpu_mapped_;
   std::vector<void*> output_tensors_data_;
+  std::vector<void*> output_tensors_ort_allocation_;
   std::vector<size_t> output_tensors_step_;
   std::vector<float> wdl_output_data_;
+
   Ort::MemoryInfo memory_info_{nullptr};
 };
+
 template <typename DataType>
 class DmlDxComputation final : public NetworkComputation {
  public:
@@ -77,15 +156,20 @@ class DmlDxComputation final : public NetworkComputation {
 
  private:
   Ort::IoBinding PrepareInputs(int start, int batch_size, int step);
+  void CopyOutputs(int start, int batch_size);
+
   DmlDxNetwork* network_;
   size_t input_size_ = 0;
   std::vector<InputPlanes> raw_input_;
   std::unique_ptr<DmlInputsOutputs> inputs_outputs_;
 };
+
 class DmlDxNetwork final : public Network {
  public:
   DmlDxNetwork(const WeightsFile& file, const OptionsDict& options,
                bool cpu_wdl);
+  ~DmlDxNetwork() override;
+
   std::unique_ptr<NetworkComputation> NewComputation() override {
     if (fp16_) {
       return std::make_unique<DmlDxComputation<Ort::Float16_t>>(this);
@@ -95,18 +179,23 @@ class DmlDxNetwork final : public Network {
       return std::make_unique<DmlDxComputation<float>>(this);
     }
   }
+
   const NetworkCapabilities& GetCapabilities() const override {
     return capabilities_;
   }
+
   int GetMiniBatchSize() const override {
     return batch_size_ == -1 ? Network::GetMiniBatchSize()
                              : batch_size_ * steps_;
   }
+
   int GetPreferredBatchStep() const override {
     return batch_size_ == -1 ? min_batch_size_ : batch_size_;
   }
+
   bool IsCpu() const override { return false; }
   Ort::SessionOptions GetOptions(int threads, int batch_size, int optimize);
+
   std::unique_ptr<DmlInputsOutputs> GetInputsOutputs() {
     std::lock_guard<std::mutex> lock(inputs_outputs_lock_);
     if (free_inputs_outputs_.empty()) {
@@ -117,10 +206,14 @@ class DmlDxNetwork final : public Network {
     free_inputs_outputs_.pop_front();
     return resource;
   }
+
   void ReleaseInputsOutputs(std::unique_ptr<DmlInputsOutputs> resource) {
     std::lock_guard<std::mutex> lock(inputs_outputs_lock_);
     free_inputs_outputs_.push_back(std::move(resource));
   }
+
+  bool UseGpuInterop() const { return !bf16_; }
+
   Ort::Env onnx_env_;
   int steps_;
   std::vector<Ort::Session> session_;
@@ -140,48 +233,123 @@ class DmlDxNetwork final : public Network {
   static constexpr int max_batch_size_ = 1024;
   std::mutex lock_;
   DxContext dx_context_;
+  const OrtDmlApi* dml_api_ = nullptr;
+  IDMLDevice* dml_device_ = nullptr;
+  bool command_list_needs_reset_ = false;
 
  private:
   std::mutex inputs_outputs_lock_;
   std::list<std::unique_ptr<DmlInputsOutputs>> free_inputs_outputs_;
 };
-DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network) {
+
+DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
+    : gpu_interop_(network->UseGpuInterop()), dml_api_(network->dml_api_) {
   const int max_batch_size = network->max_batch_size_;
   const int value_head = network->value_head_;
   const int wdl_head = network->wdl_head_;
   const int policy_head = network->policy_head_;
   const int mlh_head = network->mlh_head_;
   const int data_size = (network->fp16_ || network->bf16_) ? 2 : 4;
-  int outputs_size =
+  const int outputs_size =
       std::max({value_head, wdl_head, policy_head, mlh_head}) + 1;
+
   output_tensors_data_.resize(outputs_size);
   output_tensors_step_.resize(outputs_size);
+  output_tensors_ort_allocation_.resize(outputs_size);
+  output_tensors_gpu_.resize(outputs_size);
+  output_tensors_gpu_mapped_.resize(outputs_size);
+
   if (wdl_head != -1) {
     wdl_output_data_.resize(3 * max_batch_size);
   }
+
   output_tensors_step_[policy_head] = kNumOutputPolicy;
-  if (wdl_head != -1) {
-    output_tensors_step_[wdl_head] = 3;
+  if (wdl_head != -1) output_tensors_step_[wdl_head] = 3;
+  if (value_head != -1) output_tensors_step_[value_head] = 1;
+  if (mlh_head != -1) output_tensors_step_[mlh_head] = 1;
+
+  if (gpu_interop_) {
+    network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
+                                         sizeof(uint64_t),
+                                     D3D12_HEAP_TYPE_UPLOAD,
+                                     input_masks_mem_gpu_, false);
+    network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
+                                         sizeof(float),
+                                     D3D12_HEAP_TYPE_UPLOAD, input_val_mem_gpu_,
+                                     false);
+    network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes * 8 * 8 *
+                                         data_size,
+                                     D3D12_HEAP_TYPE_DEFAULT, input_tensor_gpu_,
+                                     network->fp16_);
+
+    ReportDxErrors(input_masks_mem_gpu_.resource->Map(
+        0, nullptr, reinterpret_cast<void**>(&input_masks_mem_)));
+    ReportDxErrors(input_val_mem_gpu_.resource->Map(
+        0, nullptr, reinterpret_cast<void**>(&input_val_mem_)));
+    Ort::ThrowOnError(dml_api_->CreateGPUAllocationFromD3DResource(
+        input_tensor_gpu_.resource, &input_ort_allocation_));
+
+    for (int i = 0; i < outputs_size; i++) {
+      output_tensors_data_[i] =
+          malloc(max_batch_size * output_tensors_step_[i] * data_size);
+      network->dx_context_.CreateAlloc(max_batch_size *
+                                           output_tensors_step_[i] * data_size,
+                                       D3D12_HEAP_TYPE_CUSTOM,
+                                       output_tensors_gpu_[i], network->fp16_);
+      ReportDxErrors(output_tensors_gpu_[i].resource->Map(
+          0, nullptr, &output_tensors_gpu_mapped_[i]));
+      Ort::ThrowOnError(dml_api_->CreateGPUAllocationFromD3DResource(
+          output_tensors_gpu_[i].resource, &output_tensors_ort_allocation_[i]));
+    }
+
+    memory_info_ =
+        Ort::MemoryInfo{"DML", OrtDeviceAllocator, network->gpu_,
+                        OrtMemTypeDefault};
+  } else {
+    input_tensor_data_ =
+        malloc(max_batch_size * kInputPlanes * 8 * 8 * data_size);
+    for (int i = 0; i < outputs_size; i++) {
+      output_tensors_data_[i] =
+          malloc(max_batch_size * output_tensors_step_[i] * data_size);
+    }
+    memory_info_ =
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
   }
-  if (value_head != -1) {
-    output_tensors_step_[value_head] = 1;
-  }
-  if (mlh_head != -1) {
-    output_tensors_step_[mlh_head] = 1;
-  }
-  // NOTE: This backend owns a DX12 context and is structured for D3D12-backed
-  // ORT IoBinding interop. The ORT version/API used in this repository path
-  // does not expose a stable D3D12 tensor binding surface in-tree, so we use
-  // the safe buildable CPU tensor fallback here while preserving DML EP usage.
-  input_tensor_data_ =
-      malloc(max_batch_size * kInputPlanes * 8 * 8 * data_size);
-  for (int i = 0; i < outputs_size; i++) {
-    output_tensors_data_[i] =
-        malloc(max_batch_size * output_tensors_step_[i] * data_size);
-  }
-  memory_info_ =
-      Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 }
+
+DmlInputsOutputs::~DmlInputsOutputs() {
+  if (gpu_interop_) {
+    if (input_masks_mem_gpu_.resource && input_masks_mem_) {
+      input_masks_mem_gpu_.resource->Unmap(0, nullptr);
+    }
+    if (input_val_mem_gpu_.resource && input_val_mem_) {
+      input_val_mem_gpu_.resource->Unmap(0, nullptr);
+    }
+    for (size_t i = 0; i < output_tensors_gpu_.size(); i++) {
+      if (output_tensors_gpu_[i].resource && output_tensors_gpu_mapped_[i]) {
+        output_tensors_gpu_[i].resource->Unmap(0, nullptr);
+      }
+    }
+    if (dml_api_) {
+      if (input_ort_allocation_) {
+        IgnoreOrtStatus(dml_api_->FreeGPUAllocation(input_ort_allocation_));
+      }
+      for (void* allocation : output_tensors_ort_allocation_) {
+        if (allocation) {
+          IgnoreOrtStatus(dml_api_->FreeGPUAllocation(allocation));
+        }
+      }
+    }
+    ReleaseAlloc(input_tensor_gpu_);
+    ReleaseAlloc(input_masks_mem_gpu_);
+    ReleaseAlloc(input_val_mem_gpu_);
+    for (auto& alloc : output_tensors_gpu_) ReleaseAlloc(alloc);
+  } else {
+    free(input_tensor_data_);
+  }
+  for (void* ptr : output_tensors_data_) free(ptr);
+}
+
 void AsDataType(float x, float* y) { *y = x; }
 void AsDataType(float x, Ort::Float16_t* y) {
   uint16_t tmp = FP32toFP16(x);
@@ -191,15 +359,18 @@ void AsDataType(float x, Ort::BFloat16_t* y) {
   uint16_t tmp = FP32toBF16(x);
   std::memcpy(reinterpret_cast<uint16_t*>(y), &tmp, sizeof(uint16_t));
 }
+
 template <typename DataType>
 DmlDxComputation<DataType>::DmlDxComputation(DmlDxNetwork* network)
     : network_(network) {
   inputs_outputs_ = network_->GetInputsOutputs();
 }
+
 template <typename DataType>
 DmlDxComputation<DataType>::~DmlDxComputation() {
   network_->ReleaseInputsOutputs(std::move(inputs_outputs_));
 }
+
 template <typename DataType>
 void DmlDxComputation<DataType>::AddInput(InputPlanes&& input) {
   if (input_size_ >= network_->max_batch_size_) {
@@ -209,10 +380,12 @@ void DmlDxComputation<DataType>::AddInput(InputPlanes&& input) {
   raw_input_.emplace_back(std::move(input));
   input_size_++;
 }
+
 template <typename DataType>
 int DmlDxComputation<DataType>::GetBatchSize() const {
   return input_size_;
 }
+
 float AsFloat(float x) { return x; }
 float AsFloat(Ort::Float16_t x) {
   uint16_t tmp;
@@ -224,6 +397,7 @@ float AsFloat(Ort::BFloat16_t x) {
   std::memcpy(&tmp, reinterpret_cast<uint16_t*>(&x), sizeof(uint16_t));
   return BF16toFP32(tmp);
 }
+
 template <typename DataType>
 float DmlDxComputation<DataType>::GetQVal(int sample) const {
   if (network_->wdl_head_ != -1) {
@@ -234,17 +408,20 @@ float DmlDxComputation<DataType>::GetQVal(int sample) const {
       inputs_outputs_->output_tensors_data_[network_->value_head_]);
   return AsFloat(data[sample]);
 }
+
 template <typename DataType>
 float DmlDxComputation<DataType>::GetDVal(int sample) const {
   if (network_->wdl_head_ == -1) return 0.0f;
   return inputs_outputs_->wdl_output_data_[sample * 3 + 1];
 }
+
 template <typename DataType>
 float DmlDxComputation<DataType>::GetPVal(int sample, int move_id) const {
   DataType* data = static_cast<DataType*>(
       inputs_outputs_->output_tensors_data_[network_->policy_head_]);
   return AsFloat(data[sample * kNumOutputPolicy + move_id]);
 }
+
 template <typename DataType>
 float DmlDxComputation<DataType>::GetMVal(int sample) const {
   if (network_->mlh_head_ == -1) return 0.0f;
@@ -252,66 +429,120 @@ float DmlDxComputation<DataType>::GetMVal(int sample) const {
       inputs_outputs_->output_tensors_data_[network_->mlh_head_]);
   return AsFloat(data[sample]);
 }
+
 template <typename DataType>
 Ort::IoBinding DmlDxComputation<DataType>::PrepareInputs(int start,
                                                          int batch_size,
                                                          int step) {
-  DataType* iter = static_cast<DataType*>(inputs_outputs_->input_tensor_data_);
-  iter += start * kInputPlanes * 8 * 8;
-  std::memset(static_cast<void*>(iter), 0,
-              batch_size * kInputPlanes * 8 * 8 * sizeof(DataType));
-  const int end = std::min(start + batch_size, static_cast<int>(input_size_));
-  for (int i = start; i < end; i++) {
-    for (const auto& plane : raw_input_[i]) {
-      DataType value;
-      AsDataType(plane.value, &value);
-      for (auto bit : IterateBits(plane.mask)) {
-        *(iter + bit) = value;
+  if (inputs_outputs_->gpu_interop_) {
+    std::memset(inputs_outputs_->input_masks_mem_, 0,
+                batch_size * kInputPlanes * sizeof(uint64_t));
+    std::memset(inputs_outputs_->input_val_mem_, 0,
+                batch_size * kInputPlanes * sizeof(float));
+
+    uint64_t* mask_iter = inputs_outputs_->input_masks_mem_;
+    float* value_iter = inputs_outputs_->input_val_mem_;
+    const int end = std::min(start + batch_size, static_cast<int>(input_size_));
+    for (int i = start; i < end; i++) {
+      for (const auto& plane : raw_input_[i]) {
+        *mask_iter++ = plane.mask;
+        *value_iter++ = plane.value;
       }
-      iter += 64;
+    }
+
+    network_->dx_context_.ResetCL(nullptr, nullptr,
+                                  network_->command_list_needs_reset_);
+    network_->dx_context_.getShaderWrapper()->ExpandPlanes(
+        network_->dx_context_.getCommandList(), inputs_outputs_->input_tensor_gpu_,
+        inputs_outputs_->input_masks_mem_gpu_, inputs_outputs_->input_val_mem_gpu_,
+        batch_size, network_->fp16_);
+    network_->dx_context_.UavBarrier();
+    network_->dx_context_.FlushCL();
+    network_->command_list_needs_reset_ = true;
+  } else {
+    DataType* iter = static_cast<DataType*>(inputs_outputs_->input_tensor_data_);
+    iter += start * kInputPlanes * 8 * 8;
+    std::memset(static_cast<void*>(iter), 0,
+                batch_size * kInputPlanes * 8 * 8 * sizeof(DataType));
+    const int end = std::min(start + batch_size, static_cast<int>(input_size_));
+    for (int i = start; i < end; i++) {
+      for (const auto& plane : raw_input_[i]) {
+        DataType value;
+        AsDataType(plane.value, &value);
+        for (auto bit : IterateBits(plane.mask)) {
+          *(iter + bit) = value;
+        }
+        iter += 64;
+      }
     }
   }
+
   Ort::IoBinding binding{network_->session_[step - 1]};
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
-    int size = inputs_outputs_->output_tensors_step_[i];
-    int64_t dims[] = {batch_size, size};
-    binding.BindOutput(
-        network_->outputs_[i].c_str(),
-        Ort::Value::CreateTensor<DataType>(
-            inputs_outputs_->memory_info_,
-            static_cast<DataType*>(inputs_outputs_->output_tensors_data_[i]) +
-                start * size,
-            size * batch_size, dims, 2));
+    const int size = inputs_outputs_->output_tensors_step_[i];
+    const int64_t dims[] = {batch_size, size};
+    auto* output = inputs_outputs_->gpu_interop_
+                       ? reinterpret_cast<DataType*>(
+                             inputs_outputs_->output_tensors_ort_allocation_[i])
+                       : static_cast<DataType*>(
+                             inputs_outputs_->output_tensors_data_[i]) +
+                             start * size;
+    binding.BindOutput(network_->outputs_[i].c_str(),
+                       Ort::Value::CreateTensor<DataType>(
+                           inputs_outputs_->memory_info_, output,
+                           size * batch_size, dims, 2));
   }
-  int64_t dims[] = {batch_size, kInputPlanes, 8, 8};
-  binding.BindInput(
-      network_->inputs_[0].c_str(),
-      Ort::Value::CreateTensor<DataType>(
-          inputs_outputs_->memory_info_,
-          static_cast<DataType*>(inputs_outputs_->input_tensor_data_) +
-              start * kInputPlanes * 8 * 8,
-          batch_size * kInputPlanes * 8 * 8, dims, 4));
+
+  const int64_t dims[] = {batch_size, kInputPlanes, 8, 8};
+  auto* input = inputs_outputs_->gpu_interop_
+                    ? reinterpret_cast<DataType*>(
+                          inputs_outputs_->input_ort_allocation_)
+                    : static_cast<DataType*>(inputs_outputs_->input_tensor_data_) +
+                          start * kInputPlanes * 8 * 8;
+  binding.BindInput(network_->inputs_[0].c_str(),
+                    Ort::Value::CreateTensor<DataType>(
+                        inputs_outputs_->memory_info_, input,
+                        batch_size * kInputPlanes * 8 * 8, dims, 4));
   return binding;
 }
+
+template <typename DataType>
+void DmlDxComputation<DataType>::CopyOutputs(int start, int batch_size) {
+  if (!inputs_outputs_->gpu_interop_) return;
+  for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
+    const size_t stride = inputs_outputs_->output_tensors_step_[i];
+    CopyOutputChunk<DataType>(inputs_outputs_->output_tensors_data_[i],
+                              inputs_outputs_->output_tensors_gpu_mapped_[i],
+                              static_cast<size_t>(start) * stride,
+                              static_cast<size_t>(batch_size) * stride);
+  }
+}
+
 template <typename DataType>
 void DmlDxComputation<DataType>::ComputeBlocking() {
   if (GetBatchSize() == 0) return;
+
   int batch_size = network_->batch_size_;
   if (batch_size < 0) {
     batch_size =
         std::max(static_cast<int>(input_size_), network_->min_batch_size_);
   }
+
   std::lock_guard<std::mutex> lock(network_->lock_);
   for (size_t i = 0; i < input_size_;) {
     int step = (input_size_ - i + batch_size - 1) / batch_size;
     if (step > network_->steps_) step = network_->steps_;
     int batch = batch_size * step;
-    auto binding = PrepareInputs(i, batch, step);
+    int actual_batch = std::min(batch, static_cast<int>(input_size_ - i));
+
+    auto binding = PrepareInputs(static_cast<int>(i), batch, step);
     binding.SynchronizeInputs();
     network_->session_[step - 1].Run(Ort::RunOptions{}, binding);
     binding.SynchronizeOutputs();
+    CopyOutputs(static_cast<int>(i), actual_batch);
     i += batch;
   }
+
   if (network_->wdl_head_ != -1) {
     const DataType* data = static_cast<DataType*>(
         inputs_outputs_->output_tensors_data_[network_->wdl_head_]);
@@ -335,10 +566,12 @@ void DmlDxComputation<DataType>::ComputeBlocking() {
     }
   }
 }
+
 Ort::SessionOptions DmlDxNetwork::GetOptions(int threads, int batch_size,
                                              int optimize) {
   Ort::SessionOptions options;
   options.SetIntraOpNumThreads(threads);
+
   GraphOptimizationLevel level = GraphOptimizationLevel::ORT_DISABLE_ALL;
   switch (optimize) {
     case 0:
@@ -355,17 +588,19 @@ Ort::SessionOptions DmlDxNetwork::GetOptions(int threads, int batch_size,
       break;
   }
   options.SetGraphOptimizationLevel(level);
+
   if (batch_size > 0) {
     Ort::ThrowOnError(
         OrtGetApiBase()
             ->GetApi(ORT_API_VERSION)
             ->AddFreeDimensionOverrideByName(options, "batch", batch_size));
   }
-  std::unordered_map<std::string, std::string> dml_options;
-  dml_options["device_id"] = std::to_string(gpu_);
-  options.AppendExecutionProvider("DML", dml_options);
+
+  Ort::ThrowOnError(dml_api_->SessionOptionsAppendExecutionProvider_DML1(
+      options, dml_device_, dx_context_.getCommandQueue()));
   return options;
 }
+
 DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
                            bool cpu_wdl)
     : onnx_env_(ORT_LOGGING_LEVEL_WARNING, "lc0"),
@@ -377,6 +612,15 @@ DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
       cpu_wdl_(cpu_wdl),
       dx_context_(opts) {
   onnx_env_.DisableTelemetryEvents();
+  dml_api_ = GetDmlApi();
+  dml_device_ = CreateDmlDevice(dx_context_.getDevice());
+
+  if (bf16_) {
+    CERR << "INFO: dml-dx12 uses CPU input expansion for bfloat16 models "
+            "because the shared DX12 ExpandPlanes shader only supports "
+            "fp16/fp32 outputs.";
+  }
+
   gpu_ = opts.GetOrDefault<int>("gpu", 0);
   int threads = opts.GetOrDefault<int>("threads", 0);
   int optimize = opts.GetOrDefault<int>("optimize", 3);
@@ -386,6 +630,7 @@ DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
   batch_size_ = opts.GetOrDefault<int>("batch", default_batch);
   steps_ = opts.GetOrDefault<int>("steps", default_steps);
   min_batch_size_ = opts.GetOrDefault<int>("min_batch", default_min_batch);
+
   if (batch_size_ <= 0) {
     batch_size_ = -1;
     steps_ = 1;
@@ -393,6 +638,7 @@ DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
   if (batch_size_ * steps_ > max_batch_size_) {
     batch_size_ = max_batch_size_ / steps_;
   }
+
   const auto& md = file.onnx_model();
   if (!md.has_input_planes()) {
     throw Exception("NN doesn't have input planes defined.");
@@ -416,17 +662,24 @@ DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
     mlh_head_ = outputs_.size();
     outputs_.emplace_back(md.output_mlh());
   }
+
   for (int step = 1; step <= steps_; step++) {
     session_.emplace_back(onnx_env_, md.model().data(), md.model().size(),
                           GetOptions(threads, batch_size_ * step, optimize));
   }
 }
+
+DmlDxNetwork::~DmlDxNetwork() {
+  if (dml_device_) dml_device_->Release();
+}
+
 std::unique_ptr<Network> MakeDmlDxNetwork(const std::optional<WeightsFile>& w,
                                           const OptionsDict& opts) {
   if (!w) throw Exception("The DML DX12 backend requires a network file.");
   if (w->has_onnx_model()) {
     return std::make_unique<DmlDxNetwork>(*w, opts, false);
   }
+
   WeightsToOnnxConverterOptions converter_options;
   converter_options.ir = opts.GetOrDefault<int>("ir", -1);
   converter_options.alt_mish = opts.GetOrDefault<bool>("alt_mish", false);
@@ -442,6 +695,7 @@ std::unique_ptr<Network> MakeDmlDxNetwork(const std::optional<WeightsFile>& w,
       opts.GetOrDefault<std::string>("value_head", "winner");
   converter_options.no_wdl_softmax = true;
   converter_options.real_mish = false;
+
   std::string datatype;
   if (opts.Exists<std::string>("datatype")) {
     datatype = opts.Get<std::string>("datatype");
@@ -456,10 +710,13 @@ std::unique_ptr<Network> MakeDmlDxNetwork(const std::optional<WeightsFile>& w,
                        WeightsToOnnxConverterOptions::DataType::kBFloat16
                    ? 22
                    : 17);
+
   auto converted = ConvertWeightsToOnnx(*w, converter_options);
   return std::make_unique<DmlDxNetwork>(converted, opts, true);
 }
+
 REGISTER_NETWORK("dml-dx12", MakeDmlDxNetwork, 121)
+
 }  // namespace dx_dml_backend
 }  // namespace lczero
 #endif  // USE_DML
