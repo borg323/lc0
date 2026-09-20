@@ -290,6 +290,7 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
         input_tensor_gpu_.resource, &input_ort_allocation_));
 
     for (int i = 0; i < outputs_size; i++) {
+      if (output_tensors_step_[i] == 0) continue;
       output_tensors_data_[i] =
           malloc(max_batch_size * output_tensors_step_[i] * data_size);
       network->dx_context_.CreateAlloc(max_batch_size *
@@ -440,13 +441,16 @@ Ort::IoBinding DmlDxComputation<DataType>::PrepareInputs(int start,
     std::memset(inputs_outputs_->input_val_mem_, 0,
                 batch_size * kInputPlanes * sizeof(float));
 
-    uint64_t* mask_iter = inputs_outputs_->input_masks_mem_;
-    float* value_iter = inputs_outputs_->input_val_mem_;
     const int end = std::min(start + batch_size, static_cast<int>(input_size_));
     for (int i = start; i < end; i++) {
+      const size_t sample_offset = static_cast<size_t>(i - start) * kInputPlanes;
+      size_t plane_index = 0;
       for (const auto& plane : raw_input_[i]) {
-        *mask_iter++ = plane.mask;
-        *value_iter++ = plane.value;
+        inputs_outputs_->input_masks_mem_[sample_offset + plane_index] =
+            plane.mask;
+        inputs_outputs_->input_val_mem_[sample_offset + plane_index] =
+            plane.value;
+        plane_index++;
       }
     }
 
@@ -480,6 +484,7 @@ Ort::IoBinding DmlDxComputation<DataType>::PrepareInputs(int start,
   Ort::IoBinding binding{network_->session_[step - 1]};
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const int size = inputs_outputs_->output_tensors_step_[i];
+    if (size == 0) continue;
     const int64_t dims[] = {batch_size, size};
     auto* output = inputs_outputs_->gpu_interop_
                        ? reinterpret_cast<DataType*>(
@@ -511,6 +516,7 @@ void DmlDxComputation<DataType>::CopyOutputs(int start, int batch_size) {
   if (!inputs_outputs_->gpu_interop_) return;
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const size_t stride = inputs_outputs_->output_tensors_step_[i];
+    if (stride == 0) continue;
     CopyOutputChunk<DataType>(inputs_outputs_->output_tensors_data_[i],
                               inputs_outputs_->output_tensors_gpu_mapped_[i],
                               static_cast<size_t>(start) * stride,
@@ -612,6 +618,7 @@ DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
       cpu_wdl_(cpu_wdl),
       dx_context_(opts) {
   onnx_env_.DisableTelemetryEvents();
+  gpu_ = opts.GetOrDefault<int>("gpu", 0);
   dml_api_ = GetDmlApi();
   dml_device_ = CreateDmlDevice(dx_context_.getDevice());
 
@@ -621,7 +628,6 @@ DmlDxNetwork::DmlDxNetwork(const WeightsFile& file, const OptionsDict& opts,
             "fp16/fp32 outputs.";
   }
 
-  gpu_ = opts.GetOrDefault<int>("gpu", 0);
   int threads = opts.GetOrDefault<int>("threads", 0);
   int optimize = opts.GetOrDefault<int>("optimize", 3);
   int default_batch = 16;
