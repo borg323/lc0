@@ -32,8 +32,6 @@
 #include "onnx_conf.h"
 #ifdef USE_DML
 
-#include <libloaderapi.h>
-
 #include "dml_provider_factory.h"
 #include "neural/backends/dx/network_dx.h"
 #include "neural/factory.h"
@@ -49,6 +47,7 @@ namespace lczero {
 namespace dx_dml_backend {
 using dx_backend::DXAlloc;
 using dx_backend::DxContext;
+using dx_backend::DxError;
 
 namespace {
 
