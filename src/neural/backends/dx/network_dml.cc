@@ -148,11 +148,16 @@ struct CommandStream {
 
   void WaitForGpu() { WaitForGpu(next_fence_value); }
 
+  uint64_t Signal() {
+    ReportDxErrors(queue->Signal(fence, ++next_fence_value));
+    return next_fence_value;
+  }
+
   uint64_t Execute() {
     command_list->Close();
     ID3D12CommandList* lists[] = {command_list};
     queue->ExecuteCommandLists(1, lists);
-    ReportDxErrors(queue->Signal(fence, ++next_fence_value));
+    Signal();
     needs_reset = true;
     return next_fence_value;
   }
@@ -259,7 +264,7 @@ class DmlDxComputation final : public NetworkComputation {
   uint64_t ScheduleUpload(const BatchStep& batch, uint64_t wait_fence_value);
   Ort::IoBinding PrepareBinding(int batch_size, int step);
   uint64_t ExpandInputs(int batch_size, uint64_t upload_fence_value);
-  uint64_t ScheduleDownload(int batch_size);
+  uint64_t ScheduleDownload(int batch_size, uint64_t wait_fence_value);
   void CopyOutputs(int start, int batch_size);
 
   DmlDxNetwork* network_;
@@ -666,12 +671,15 @@ uint64_t DmlDxComputation<DataType>::ExpandInputs(int batch_size,
 }
 
 template <typename DataType>
-uint64_t DmlDxComputation<DataType>::ScheduleDownload(int batch_size) {
+uint64_t DmlDxComputation<DataType>::ScheduleDownload(
+    int batch_size, uint64_t wait_fence_value) {
   auto& download_stream = inputs_outputs_->download_stream_;
   download_stream.WaitForGpu();
   network_->dx_context_.ResetCL(download_stream.command_list,
                                 download_stream.allocator,
                                 download_stream.needs_reset);
+  download_stream.QueueWait(inputs_outputs_->compute_stream_.fence,
+                            wait_fence_value);
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const size_t stride = inputs_outputs_->output_tensors_step_[i];
     if (stride == 0) continue;
@@ -730,7 +738,9 @@ void DmlDxComputation<DataType>::ComputeBlocking() {
     }
 
     network_->session_[current.step - 1].Run(Ort::RunOptions{}, binding);
-    uint64_t download_fence_value = ScheduleDownload(current.actual_batch);
+    uint64_t inference_done_fence = inputs_outputs_->compute_stream_.Signal();
+    uint64_t download_fence_value =
+        ScheduleDownload(current.actual_batch, inference_done_fence);
     inputs_outputs_->download_stream_.WaitForGpu(download_fence_value);
     CopyOutputs(static_cast<int>(current.start), current.actual_batch);
 
