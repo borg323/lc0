@@ -65,20 +65,6 @@ void ReleaseAlloc(DXAlloc& alloc) {
   ReleaseInterface(alloc.resource);
 }
 
-void TransitionResource(ID3D12GraphicsCommandList4* command_list,
-                        ID3D12Resource* resource,
-                        D3D12_RESOURCE_STATES before,
-                        D3D12_RESOURCE_STATES after) {
-  if (!resource || before == after) return;
-  auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource, before, after);
-  command_list->ResourceBarrier(1, &barrier);
-}
-
-void InsertUavBarrier(ID3D12GraphicsCommandList4* command_list) {
-  auto barrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-  command_list->ResourceBarrier(1, &barrier);
-}
-
 void CopyOutputChunk(void* dst, const void* src, size_t offset_elements,
                      size_t count_elements, size_t element_size) {
   std::memcpy(static_cast<char*>(dst) + offset_elements * element_size, src,
@@ -90,83 +76,6 @@ void IgnoreOrtStatus(OrtStatus* status) {
     OrtGetApiBase()->GetApi(ORT_API_VERSION)->ReleaseStatus(status);
   }
 }
-
-struct CommandStream {
-  ID3D12CommandQueue* queue = nullptr;
-  ID3D12CommandAllocator* allocator = nullptr;
-  ID3D12GraphicsCommandList4* command_list = nullptr;
-  ID3D12Fence* fence = nullptr;
-  HANDLE fence_event = nullptr;
-  uint64_t next_fence_value = 0;
-  bool needs_reset = false;
-  bool owns_queue = false;
-  D3D12_COMMAND_LIST_TYPE type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-
-  void Init(ID3D12Device5* device, D3D12_COMMAND_LIST_TYPE stream_type,
-            ID3D12CommandQueue* shared_queue = nullptr) {
-    type = stream_type;
-    if (shared_queue) {
-      queue = shared_queue;
-    } else {
-      D3D12_COMMAND_QUEUE_DESC desc = {};
-      desc.Type = stream_type;
-      desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-      desc.NodeMask = 0;
-      desc.Priority = 0;
-      ReportDxErrors(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue)));
-      owns_queue = true;
-    }
-    ReportDxErrors(
-        device->CreateCommandAllocator(stream_type, IID_PPV_ARGS(&allocator)));
-    ReportDxErrors(device->CreateCommandList(1, stream_type, allocator, nullptr,
-                                             IID_PPV_ARGS(&command_list)));
-    ReportDxErrors(
-        device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
-    fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!fence_event) {
-      throw Exception("Failed to create D3D12 fence event.");
-    }
-  }
-
-  void Destroy() {
-    if (fence_event) {
-      CloseHandle(fence_event);
-      fence_event = nullptr;
-    }
-    ReleaseInterface(fence);
-    ReleaseInterface(command_list);
-    ReleaseInterface(allocator);
-    if (owns_queue) ReleaseInterface(queue);
-  }
-
-  void WaitForGpu(uint64_t fence_value) {
-    if (!fence_value) return;
-    if (fence->GetCompletedValue() >= fence_value) return;
-    ReportDxErrors(fence->SetEventOnCompletion(fence_value, fence_event));
-    WaitForSingleObject(fence_event, INFINITE);
-  }
-
-  void WaitForGpu() { WaitForGpu(next_fence_value); }
-
-  uint64_t Signal() {
-    ReportDxErrors(queue->Signal(fence, ++next_fence_value));
-    return next_fence_value;
-  }
-
-  uint64_t Execute() {
-    command_list->Close();
-    ID3D12CommandList* lists[] = {command_list};
-    queue->ExecuteCommandLists(1, lists);
-    Signal();
-    needs_reset = true;
-    return next_fence_value;
-  }
-
-  void QueueWait(ID3D12Fence* other_fence, uint64_t other_fence_value) {
-    if (!other_fence || !other_fence_value) return;
-    ReportDxErrors(queue->Wait(other_fence, other_fence_value));
-  }
-};
 
 const OrtDmlApi* GetDmlApi() {
   const void* provider_api = nullptr;
@@ -214,26 +123,20 @@ struct DmlInputsOutputs {
 
   const OrtDmlApi* dml_api_ = nullptr;
 
-  DXAlloc input_masks_upload_mem_gpu_{};
-  DXAlloc input_val_upload_mem_gpu_{};
-  DXAlloc input_masks_gpu_{};
-  DXAlloc input_val_gpu_{};
+  DXAlloc input_masks_mem_gpu_{};
+  DXAlloc input_val_mem_gpu_{};
   DXAlloc input_tensor_gpu_{};
   uint64_t* input_masks_mem_ = nullptr;
   float* input_val_mem_ = nullptr;
   void* input_ort_allocation_ = nullptr;
 
   std::vector<DXAlloc> output_tensors_gpu_;
-  std::vector<DXAlloc> output_tensors_readback_;
-  std::vector<void*> output_tensors_readback_mapped_;
+  std::vector<void*> output_tensors_gpu_mapped_;
   std::vector<void*> output_tensors_data_;
   std::vector<void*> output_tensors_ort_allocation_;
   std::vector<size_t> output_tensors_step_;
   std::vector<float> wdl_output_data_;
 
-  CommandStream upload_stream_;
-  CommandStream compute_stream_;
-  CommandStream download_stream_;
   Ort::MemoryInfo memory_info_{nullptr};
 };
 
@@ -251,20 +154,7 @@ class DmlDxComputation final : public NetworkComputation {
   float GetMVal(int sample) const override;
 
  private:
-  struct BatchStep {
-    size_t start = 0;
-    int step = 0;
-    int batch = 0;
-    int actual_batch = 0;
-
-    bool valid() const { return step != 0; }
-  };
-
-  BatchStep MakeBatchStep(size_t start, int batch_size) const;
-  uint64_t ScheduleUpload(const BatchStep& batch, uint64_t wait_fence_value);
-  Ort::IoBinding PrepareBinding(int batch_size, int step);
-  uint64_t ExpandInputs(int batch_size, uint64_t upload_fence_value);
-  uint64_t ScheduleDownload(int batch_size, uint64_t wait_fence_value);
+  Ort::IoBinding PrepareInputs(int start, int batch_size, int step);
   void CopyOutputs(int start, int batch_size);
 
   DmlDxNetwork* network_;
@@ -342,6 +232,7 @@ class DmlDxNetwork final : public Network {
   DxContext dx_context_;
   const OrtDmlApi* dml_api_ = nullptr;
   IDMLDevice* dml_device_ = nullptr;
+  bool command_list_needs_reset_ = false;
 
  private:
   std::mutex inputs_outputs_lock_;
@@ -363,8 +254,7 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
   output_tensors_step_.resize(outputs_size);
   output_tensors_ort_allocation_.resize(outputs_size);
   output_tensors_gpu_.resize(outputs_size);
-  output_tensors_readback_.resize(outputs_size);
-  output_tensors_readback_mapped_.resize(outputs_size);
+  output_tensors_gpu_mapped_.resize(outputs_size);
 
   if (wdl_head != -1) {
     wdl_output_data_.resize(3 * max_batch_size);
@@ -378,27 +268,19 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
   network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
                                        sizeof(uint64_t),
                                    D3D12_HEAP_TYPE_UPLOAD,
-                                   input_masks_upload_mem_gpu_, false);
+                                   input_masks_mem_gpu_, false);
   network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
                                        sizeof(float),
                                    D3D12_HEAP_TYPE_UPLOAD,
-                                   input_val_upload_mem_gpu_, false);
-  network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
-                                       sizeof(uint64_t),
-                                   D3D12_HEAP_TYPE_DEFAULT, input_masks_gpu_,
-                                   false);
-  network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
-                                       sizeof(float),
-                                   D3D12_HEAP_TYPE_DEFAULT, input_val_gpu_,
-                                   false);
+                                   input_val_mem_gpu_, false);
   network->dx_context_.CreateAlloc(
       max_batch_size * kInputPlanes * 8 * 8 * data_size,
       D3D12_HEAP_TYPE_DEFAULT, input_tensor_gpu_,
       network->fp16_ || network->bf16_);
 
-  ReportDxErrors(input_masks_upload_mem_gpu_.resource->Map(
+  ReportDxErrors(input_masks_mem_gpu_.resource->Map(
       0, nullptr, reinterpret_cast<void**>(&input_masks_mem_)));
-  ReportDxErrors(input_val_upload_mem_gpu_.resource->Map(
+  ReportDxErrors(input_val_mem_gpu_.resource->Map(
       0, nullptr, reinterpret_cast<void**>(&input_val_mem_)));
   Ort::ThrowOnError(dml_api_->CreateGPUAllocationFromD3DResource(
       input_tensor_gpu_.resource, &input_ort_allocation_));
@@ -409,57 +291,28 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
         std::malloc(max_batch_size * output_tensors_step_[i] * data_size);
     network->dx_context_.CreateAlloc(
         max_batch_size * output_tensors_step_[i] * data_size,
-        D3D12_HEAP_TYPE_DEFAULT, output_tensors_gpu_[i],
+        D3D12_HEAP_TYPE_CUSTOM, output_tensors_gpu_[i],
         network->fp16_ || network->bf16_);
-    network->dx_context_.CreateAlloc(
-        max_batch_size * output_tensors_step_[i] * data_size,
-        D3D12_HEAP_TYPE_READBACK, output_tensors_readback_[i],
-        network->fp16_ || network->bf16_);
-    ReportDxErrors(output_tensors_readback_[i].resource->Map(
-        0, nullptr, &output_tensors_readback_mapped_[i]));
+    ReportDxErrors(output_tensors_gpu_[i].resource->Map(
+        0, nullptr, &output_tensors_gpu_mapped_[i]));
     Ort::ThrowOnError(dml_api_->CreateGPUAllocationFromD3DResource(
         output_tensors_gpu_[i].resource, &output_tensors_ort_allocation_[i]));
   }
-
-  upload_stream_.Init(network->dx_context_.getDevice(),
-                      D3D12_COMMAND_LIST_TYPE_COPY);
-  compute_stream_.Init(network->dx_context_.getDevice(),
-                       D3D12_COMMAND_LIST_TYPE_DIRECT,
-                       network->dx_context_.getCommandQueue());
-  download_stream_.Init(network->dx_context_.getDevice(),
-                        D3D12_COMMAND_LIST_TYPE_DIRECT,
-                        network->dx_context_.getCommandQueue());
-
-  // DirectML DML1 requires a single execution queue, so inference and the final
-  // output copy preparation stay on the shared direct queue. Packed-input
-  // uploads use a separate copy queue and explicit fence hand-off.
-  network->dx_context_.ResetCL(compute_stream_.command_list,
-                               compute_stream_.allocator,
-                               compute_stream_.needs_reset);
-  TransitionResource(compute_stream_.command_list, input_masks_gpu_.resource,
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                     D3D12_RESOURCE_STATE_COPY_DEST);
-  TransitionResource(compute_stream_.command_list, input_val_gpu_.resource,
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                     D3D12_RESOURCE_STATE_COPY_DEST);
-  compute_stream_.Execute();
-  compute_stream_.WaitForGpu();
 
   memory_info_ = Ort::MemoryInfo{"DML", OrtDeviceAllocator, network->gpu_,
                                  OrtMemTypeDefault};
 }
 
 DmlInputsOutputs::~DmlInputsOutputs() {
-  if (input_masks_upload_mem_gpu_.resource && input_masks_mem_) {
-    input_masks_upload_mem_gpu_.resource->Unmap(0, nullptr);
+  if (input_masks_mem_gpu_.resource && input_masks_mem_) {
+    input_masks_mem_gpu_.resource->Unmap(0, nullptr);
   }
-  if (input_val_upload_mem_gpu_.resource && input_val_mem_) {
-    input_val_upload_mem_gpu_.resource->Unmap(0, nullptr);
+  if (input_val_mem_gpu_.resource && input_val_mem_) {
+    input_val_mem_gpu_.resource->Unmap(0, nullptr);
   }
-  for (size_t i = 0; i < output_tensors_readback_.size(); i++) {
-    if (output_tensors_readback_[i].resource &&
-        output_tensors_readback_mapped_[i]) {
-      output_tensors_readback_[i].resource->Unmap(0, nullptr);
+  for (size_t i = 0; i < output_tensors_gpu_.size(); i++) {
+    if (output_tensors_gpu_[i].resource && output_tensors_gpu_mapped_[i]) {
+      output_tensors_gpu_[i].resource->Unmap(0, nullptr);
     }
   }
   if (dml_api_) {
@@ -472,16 +325,10 @@ DmlInputsOutputs::~DmlInputsOutputs() {
       }
     }
   }
-  upload_stream_.Destroy();
-  compute_stream_.Destroy();
-  download_stream_.Destroy();
   ReleaseAlloc(input_tensor_gpu_);
-  ReleaseAlloc(input_masks_gpu_);
-  ReleaseAlloc(input_val_gpu_);
-  ReleaseAlloc(input_masks_upload_mem_gpu_);
-  ReleaseAlloc(input_val_upload_mem_gpu_);
+  ReleaseAlloc(input_masks_mem_gpu_);
+  ReleaseAlloc(input_val_mem_gpu_);
   for (auto& alloc : output_tensors_gpu_) ReleaseAlloc(alloc);
-  for (auto& alloc : output_tensors_readback_) ReleaseAlloc(alloc);
   for (void* ptr : output_tensors_data_) std::free(ptr);
 }
 
@@ -556,37 +403,17 @@ float DmlDxComputation<DataType>::GetMVal(int sample) const {
 }
 
 template <typename DataType>
-typename DmlDxComputation<DataType>::BatchStep
-DmlDxComputation<DataType>::MakeBatchStep(size_t start, int batch_size) const {
-  if (start >= input_size_) return {};
-  int step = (static_cast<int>(input_size_ - start) + batch_size - 1) /
-             batch_size;
-  if (step > network_->steps_) step = network_->steps_;
-  int batch = batch_size * step;
-  int actual_batch =
-      std::min(batch, static_cast<int>(input_size_ - start));
-  return {start, step, batch, actual_batch};
-}
-
-template <typename DataType>
-uint64_t DmlDxComputation<DataType>::ScheduleUpload(
-    const BatchStep& batch, uint64_t wait_fence_value) {
-  auto& upload_stream = inputs_outputs_->upload_stream_;
-  upload_stream.WaitForGpu();
-  if (upload_stream.needs_reset) {
-    ReportDxErrors(upload_stream.allocator->Reset());
-    ReportDxErrors(
-        upload_stream.command_list->Reset(upload_stream.allocator, nullptr));
-  }
-
+Ort::IoBinding DmlDxComputation<DataType>::PrepareInputs(int start,
+                                                         int batch_size,
+                                                         int step) {
   std::memset(inputs_outputs_->input_masks_mem_, 0,
-              batch.batch * kInputPlanes * sizeof(uint64_t));
+              batch_size * kInputPlanes * sizeof(uint64_t));
   std::memset(inputs_outputs_->input_val_mem_, 0,
-              batch.batch * kInputPlanes * sizeof(float));
+              batch_size * kInputPlanes * sizeof(float));
 
-  const size_t end = batch.start + batch.actual_batch;
-  for (size_t i = batch.start; i < end; i++) {
-    const size_t sample_offset = (i - batch.start) * kInputPlanes;
+  const int end = std::min(start + batch_size, static_cast<int>(input_size_));
+  for (int i = start; i < end; i++) {
+    const size_t sample_offset = static_cast<size_t>(i - start) * kInputPlanes;
     size_t plane_index = 0;
     for (const auto& plane : raw_input_[i]) {
       inputs_outputs_->input_masks_mem_[sample_offset + plane_index] =
@@ -597,22 +424,16 @@ uint64_t DmlDxComputation<DataType>::ScheduleUpload(
     }
   }
 
-  upload_stream.QueueWait(inputs_outputs_->compute_stream_.fence,
-                          wait_fence_value);
-  upload_stream.command_list->CopyBufferRegion(
-      inputs_outputs_->input_masks_gpu_.resource, 0,
-      inputs_outputs_->input_masks_upload_mem_gpu_.resource, 0,
-      batch.batch * kInputPlanes * sizeof(uint64_t));
-  upload_stream.command_list->CopyBufferRegion(
-      inputs_outputs_->input_val_gpu_.resource, 0,
-      inputs_outputs_->input_val_upload_mem_gpu_.resource, 0,
-      batch.batch * kInputPlanes * sizeof(float));
-  return upload_stream.Execute();
-}
+  network_->dx_context_.ResetCL(nullptr, nullptr,
+                                network_->command_list_needs_reset_);
+  network_->dx_context_.getShaderWrapper()->ExpandPlanes(
+      network_->dx_context_.getCommandList(), inputs_outputs_->input_tensor_gpu_,
+      inputs_outputs_->input_masks_mem_gpu_, inputs_outputs_->input_val_mem_gpu_,
+      batch_size, network_->fp16_, network_->bf16_);
+  network_->dx_context_.UavBarrier();
+  network_->dx_context_.FlushCL();
+  network_->command_list_needs_reset_ = true;
 
-template <typename DataType>
-Ort::IoBinding DmlDxComputation<DataType>::PrepareBinding(int batch_size,
-                                                          int step) {
   Ort::IoBinding binding{network_->session_[step - 1]};
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const int size = inputs_outputs_->output_tensors_step_[i];
@@ -637,75 +458,12 @@ Ort::IoBinding DmlDxComputation<DataType>::PrepareBinding(int batch_size,
 }
 
 template <typename DataType>
-uint64_t DmlDxComputation<DataType>::ExpandInputs(int batch_size,
-                                                  uint64_t upload_fence_value) {
-  auto& compute_stream = inputs_outputs_->compute_stream_;
-  compute_stream.WaitForGpu();
-  network_->dx_context_.ResetCL(compute_stream.command_list,
-                                compute_stream.allocator,
-                                compute_stream.needs_reset);
-  compute_stream.QueueWait(inputs_outputs_->upload_stream_.fence,
-                           upload_fence_value);
-  TransitionResource(compute_stream.command_list,
-                     inputs_outputs_->input_masks_gpu_.resource,
-                     D3D12_RESOURCE_STATE_COPY_DEST,
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-  TransitionResource(compute_stream.command_list,
-                     inputs_outputs_->input_val_gpu_.resource,
-                     D3D12_RESOURCE_STATE_COPY_DEST,
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-  network_->dx_context_.getShaderWrapper()->ExpandPlanes(
-      compute_stream.command_list, inputs_outputs_->input_tensor_gpu_,
-      inputs_outputs_->input_masks_gpu_, inputs_outputs_->input_val_gpu_,
-      batch_size, network_->fp16_, network_->bf16_);
-  InsertUavBarrier(compute_stream.command_list);
-  TransitionResource(compute_stream.command_list,
-                     inputs_outputs_->input_masks_gpu_.resource,
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                     D3D12_RESOURCE_STATE_COPY_DEST);
-  TransitionResource(compute_stream.command_list,
-                     inputs_outputs_->input_val_gpu_.resource,
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                     D3D12_RESOURCE_STATE_COPY_DEST);
-  return compute_stream.Execute();
-}
-
-template <typename DataType>
-uint64_t DmlDxComputation<DataType>::ScheduleDownload(
-    int batch_size, uint64_t wait_fence_value) {
-  auto& download_stream = inputs_outputs_->download_stream_;
-  download_stream.WaitForGpu();
-  network_->dx_context_.ResetCL(download_stream.command_list,
-                                download_stream.allocator,
-                                download_stream.needs_reset);
-  download_stream.QueueWait(inputs_outputs_->compute_stream_.fence,
-                            wait_fence_value);
-  for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
-    const size_t stride = inputs_outputs_->output_tensors_step_[i];
-    if (stride == 0) continue;
-    TransitionResource(download_stream.command_list,
-                       inputs_outputs_->output_tensors_gpu_[i].resource,
-                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                       D3D12_RESOURCE_STATE_COPY_SOURCE);
-    download_stream.command_list->CopyBufferRegion(
-        inputs_outputs_->output_tensors_readback_[i].resource, 0,
-        inputs_outputs_->output_tensors_gpu_[i].resource, 0,
-        batch_size * stride * sizeof(DataType));
-    TransitionResource(download_stream.command_list,
-                       inputs_outputs_->output_tensors_gpu_[i].resource,
-                       D3D12_RESOURCE_STATE_COPY_SOURCE,
-                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-  }
-  return download_stream.Execute();
-}
-
-template <typename DataType>
 void DmlDxComputation<DataType>::CopyOutputs(int start, int batch_size) {
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const size_t stride = inputs_outputs_->output_tensors_step_[i];
     if (stride == 0) continue;
     CopyOutputChunk(inputs_outputs_->output_tensors_data_[i],
-                    inputs_outputs_->output_tensors_readback_mapped_[i],
+                    inputs_outputs_->output_tensors_gpu_mapped_[i],
                     static_cast<size_t>(start) * stride,
                     static_cast<size_t>(batch_size) * stride,
                     sizeof(DataType));
@@ -723,29 +481,18 @@ void DmlDxComputation<DataType>::ComputeBlocking() {
   }
 
   std::lock_guard<std::mutex> lock(network_->lock_);
-  BatchStep current = MakeBatchStep(0, batch_size);
-  uint64_t upload_fence_value = ScheduleUpload(current, 0);
+  for (size_t i = 0; i < input_size_;) {
+    int step = (input_size_ - i + batch_size - 1) / batch_size;
+    if (step > network_->steps_) step = network_->steps_;
+    int batch = batch_size * step;
+    int actual_batch = std::min(batch, static_cast<int>(input_size_ - i));
 
-  while (current.valid()) {
-    auto binding = PrepareBinding(current.batch, current.step);
-    uint64_t inputs_processed_fence =
-        ExpandInputs(current.batch, upload_fence_value);
-
-    BatchStep next = MakeBatchStep(current.start + current.batch, batch_size);
-    uint64_t next_upload_fence_value = 0;
-    if (next.valid()) {
-      next_upload_fence_value = ScheduleUpload(next, inputs_processed_fence);
-    }
-
-    network_->session_[current.step - 1].Run(Ort::RunOptions{}, binding);
-    uint64_t inference_done_fence = inputs_outputs_->compute_stream_.Signal();
-    uint64_t download_fence_value =
-        ScheduleDownload(current.actual_batch, inference_done_fence);
-    inputs_outputs_->download_stream_.WaitForGpu(download_fence_value);
-    CopyOutputs(static_cast<int>(current.start), current.actual_batch);
-
-    current = next;
-    upload_fence_value = next_upload_fence_value;
+    auto binding = PrepareInputs(static_cast<int>(i), batch, step);
+    binding.SynchronizeInputs();
+    network_->session_[step - 1].Run(Ort::RunOptions{}, binding);
+    binding.SynchronizeOutputs();
+    CopyOutputs(static_cast<int>(i), actual_batch);
+    i += batch;
   }
 
   if (network_->wdl_head_ != -1) {
