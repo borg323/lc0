@@ -171,7 +171,8 @@ void ExpandPlanes_shader_bf16
   }
 
   uint2 rawBits = asuint(opf);
-  rawBits += (rawBits & 0x17FFF) ? 0x8000 : 0;
+  rawBits.x += (rawBits.x & 0x17FFF) ? 0x8000 : 0;
+  rawBits.y += (rawBits.y & 0x17FFF) ? 0x8000 : 0;
   uint opVal = (rawBits.x >> 16) | (rawBits.y & 0xFFFF0000);
 
   output_fp16[globalThreadIdx.x] = opVal;
