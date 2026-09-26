@@ -451,8 +451,10 @@ void DmlDxComputation<DataType>::ComputeBlocking() {
                           inputs_outputs_->memory_info_, input,
                           batch * kInputPlanes * 8 * 8, dims, 4));
 
-    inputs_outputs_->input_masks_mem_gpu_.offset = start * sizeof(DataType);
-    inputs_outputs_->input_val_mem_gpu_.offset = start * sizeof(DataType);
+    DXAlloc masks = inputs_outputs_->input_masks_mem_gpu_;
+    DXAlloc values = inputs_outputs_->input_val_mem_gpu_;
+    masks.gpu_va += start * kInputPlanes * sizeof(uint64_t);
+    values.gpu_va += start * kInputPlanes * sizeof(float);
     {
       std::lock_guard<std::mutex> lock(network_->lock_);
 
@@ -460,10 +462,8 @@ void DmlDxComputation<DataType>::ComputeBlocking() {
                                     network_->command_list_needs_reset_);
       network_->dx_context_.getShaderWrapper()->ExpandPlanes(
           network_->dx_context_.getCommandList(),
-          inputs_outputs_->input_tensor_gpu_,
-          inputs_outputs_->input_masks_mem_gpu_,
-          inputs_outputs_->input_val_mem_gpu_, batch, network_->fp16_,
-          network_->bf16_);
+          inputs_outputs_->input_tensor_gpu_, masks, values, batch,
+          network_->fp16_, network_->bf16_);
       network_->dx_context_.UavBarrier();
       network_->dx_context_.FlushCL();
       network_->command_list_needs_reset_ = true;
