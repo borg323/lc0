@@ -128,3 +128,52 @@ void ExpandPlanes_shader_fp16
   uint opVal = opu.x | (opu.y << 16);
   output_fp16[globalThreadIdx.x] = opVal;
 }
+
+// For bf16 reuse fp16 parameters.
+[numthreads(kExpandPlanesFp16BlockSize, 1, 1)]
+void ExpandPlanes_shader_bf16
+(
+    uint3 globalThreadIdx  : SV_DispatchThreadID,
+    uint3 threadIdxInGroup : SV_GroupThreadID
+)
+{
+  int global_index = globalThreadIdx.x * 2;
+  int local_index = threadIdxInGroup.x * 2;
+
+  int plane_index = global_index >> 6;
+
+  if (plane_index >= N) return;
+
+  // Load inputs to shared memory.
+  if (threadIdxInGroup.x < kNumShmemElements) {
+    sh_masks[threadIdxInGroup.x] = masks[plane_index + threadIdxInGroup.x];
+    sh_vals[threadIdxInGroup.x] = values[plane_index + threadIdxInGroup.x];
+  }
+
+  GroupMemoryBarrierWithGroupSync();
+
+  uint64_t mask = sh_masks[local_index >> 6];
+
+  int sq_index0 = global_index & 0x3F;
+  int sq_index1 = sq_index0 + 1;
+
+  bool set0 = !!(mask & (1ull << sq_index0));
+  bool set1 = !!(mask & (1ull << sq_index1));
+
+  float2 opf = 0;
+
+  if (set0) {
+    opf.x = sh_vals[local_index >> 6];
+  }
+
+  if (set1) {
+    opf.y = sh_vals[local_index >> 6];
+  }
+
+  uint2 rawBits = asuint(opf);
+  rawBits.x += (rawBits.x & 0x17FFF) ? 0x8000 : 0;
+  rawBits.y += (rawBits.y & 0x17FFF) ? 0x8000 : 0;
+  uint opVal = (rawBits.x >> 16) | (rawBits.y & 0xFFFF0000);
+
+  output_fp16[globalThreadIdx.x] = opVal;
+}
