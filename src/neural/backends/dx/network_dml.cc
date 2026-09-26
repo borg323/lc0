@@ -150,12 +150,10 @@ class DmlDxComputation final : public NetworkComputation {
   float GetMVal(int sample) const override;
 
  private:
-  Ort::IoBinding PrepareInputs(int start, int batch_size, int step);
   void CopyOutputs(int start, int batch_size);
 
   DmlDxNetwork* network_;
   size_t input_size_ = 0;
-  std::vector<InputPlanes> raw_input_;
   std::unique_ptr<DmlInputsOutputs> inputs_outputs_;
 };
 
@@ -345,7 +343,13 @@ void DmlDxComputation<DataType>::AddInput(InputPlanes&& input) {
     throw Exception("NN input exceeds max batch size of " +
                     std::to_string(network_->max_batch_size_) + ".");
   }
-  raw_input_.emplace_back(std::move(input));
+  const size_t offset = input_size_ * kInputPlanes;
+  size_t plane_index = 0;
+  for (const auto& plane : input) {
+    inputs_outputs_->input_masks_mem_[offset + plane_index] = plane.mask;
+    inputs_outputs_->input_val_mem_[offset + plane_index] = plane.value;
+    plane_index++;
+  }
   input_size_++;
 }
 
@@ -399,61 +403,6 @@ float DmlDxComputation<DataType>::GetMVal(int sample) const {
 }
 
 template <typename DataType>
-Ort::IoBinding DmlDxComputation<DataType>::PrepareInputs(int start,
-                                                         int batch_size,
-                                                         int step) {
-  std::memset(inputs_outputs_->input_masks_mem_, 0,
-              batch_size * kInputPlanes * sizeof(uint64_t));
-  std::memset(inputs_outputs_->input_val_mem_, 0,
-              batch_size * kInputPlanes * sizeof(float));
-
-  const int end = std::min(start + batch_size, static_cast<int>(input_size_));
-  for (int i = start; i < end; i++) {
-    const size_t sample_offset = static_cast<size_t>(i - start) * kInputPlanes;
-    size_t plane_index = 0;
-    for (const auto& plane : raw_input_[i]) {
-      inputs_outputs_->input_masks_mem_[sample_offset + plane_index] =
-          plane.mask;
-      inputs_outputs_->input_val_mem_[sample_offset + plane_index] =
-          plane.value;
-      plane_index++;
-    }
-  }
-
-  network_->dx_context_.ResetCL(nullptr, nullptr,
-                                network_->command_list_needs_reset_);
-  network_->dx_context_.getShaderWrapper()->ExpandPlanes(
-      network_->dx_context_.getCommandList(), inputs_outputs_->input_tensor_gpu_,
-      inputs_outputs_->input_masks_mem_gpu_, inputs_outputs_->input_val_mem_gpu_,
-      batch_size, network_->fp16_, network_->bf16_);
-  network_->dx_context_.UavBarrier();
-  network_->dx_context_.FlushCL();
-  network_->command_list_needs_reset_ = true;
-
-  Ort::IoBinding binding{network_->session_[step - 1]};
-  for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
-    const int size = inputs_outputs_->output_tensors_step_[i];
-    if (size == 0) continue;
-    const int64_t dims[] = {batch_size, size};
-    auto* output = reinterpret_cast<DataType*>(
-        inputs_outputs_->output_tensors_ort_allocation_[i]);
-    binding.BindOutput(network_->outputs_[i].c_str(),
-                       Ort::Value::CreateTensor<DataType>(
-                           inputs_outputs_->memory_info_, output,
-                           size * batch_size, dims, 2));
-  }
-
-  const int64_t dims[] = {batch_size, kInputPlanes, 8, 8};
-  auto* input =
-      reinterpret_cast<DataType*>(inputs_outputs_->input_ort_allocation_);
-  binding.BindInput(network_->inputs_[0].c_str(),
-                    Ort::Value::CreateTensor<DataType>(
-                        inputs_outputs_->memory_info_, input,
-                        batch_size * kInputPlanes * 8 * 8, dims, 4));
-  return binding;
-}
-
-template <typename DataType>
 void DmlDxComputation<DataType>::CopyOutputs(int start, int batch_size) {
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const size_t stride = inputs_outputs_->output_tensors_step_[i];
@@ -475,19 +424,56 @@ void DmlDxComputation<DataType>::ComputeBlocking() {
         std::max(static_cast<int>(input_size_), network_->min_batch_size_);
   }
 
-  std::lock_guard<std::mutex> lock(network_->lock_);
-  for (size_t i = 0; i < input_size_;) {
-    int step = (input_size_ - i + batch_size - 1) / batch_size;
+  for (size_t start = 0; start < input_size_;) {
+    int step = (input_size_ - start + batch_size - 1) / batch_size;
     if (step > network_->steps_) step = network_->steps_;
     int batch = batch_size * step;
-    int actual_batch = std::min(batch, static_cast<int>(input_size_ - i));
+    int actual_batch = std::min(batch, static_cast<int>(input_size_ - start));
 
-    auto binding = PrepareInputs(static_cast<int>(i), batch, step);
-    binding.SynchronizeInputs();
-    network_->session_[step - 1].Run(Ort::RunOptions{}, binding);
-    binding.SynchronizeOutputs();
-    CopyOutputs(static_cast<int>(i), actual_batch);
-    i += batch;
+    Ort::IoBinding binding{network_->session_[step - 1]};
+    for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
+      const int size = inputs_outputs_->output_tensors_step_[i];
+      if (size == 0) continue;
+      const int64_t dims[] = {batch, size};
+      auto* output = reinterpret_cast<DataType*>(
+          inputs_outputs_->output_tensors_ort_allocation_[i]);
+      binding.BindOutput(
+          network_->outputs_[i].c_str(),
+          Ort::Value::CreateTensor<DataType>(inputs_outputs_->memory_info_,
+                                             output, size * batch, dims, 2));
+    }
+
+    const int64_t dims[] = {batch, kInputPlanes, 8, 8};
+    auto* input =
+        reinterpret_cast<DataType*>(inputs_outputs_->input_ort_allocation_);
+    binding.BindInput(network_->inputs_[0].c_str(),
+                      Ort::Value::CreateTensor<DataType>(
+                          inputs_outputs_->memory_info_, input,
+                          batch * kInputPlanes * 8 * 8, dims, 4));
+
+    inputs_outputs_->input_masks_mem_gpu_.offset = start * sizeof(DataType);
+    inputs_outputs_->input_val_mem_gpu_.offset = start * sizeof(DataType);
+    {
+      std::lock_guard<std::mutex> lock(network_->lock_);
+
+      network_->dx_context_.ResetCL(nullptr, nullptr,
+                                    network_->command_list_needs_reset_);
+      network_->dx_context_.getShaderWrapper()->ExpandPlanes(
+          network_->dx_context_.getCommandList(),
+          inputs_outputs_->input_tensor_gpu_,
+          inputs_outputs_->input_masks_mem_gpu_,
+          inputs_outputs_->input_val_mem_gpu_, batch, network_->fp16_,
+          network_->bf16_);
+      network_->dx_context_.UavBarrier();
+      network_->dx_context_.FlushCL();
+      network_->command_list_needs_reset_ = true;
+
+      binding.SynchronizeInputs();
+      network_->session_[step - 1].Run(Ort::RunOptions{}, binding);
+      binding.SynchronizeOutputs();
+    }
+    CopyOutputs(static_cast<int>(start), actual_batch);
+    start += batch;
   }
 
   if (network_->wdl_head_ != -1) {
