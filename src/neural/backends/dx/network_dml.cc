@@ -53,10 +53,27 @@ namespace {
 
 static constexpr int kNumOutputPolicy = 1858;
 
+template <typename T>
+void ReleaseInterface(T*& ptr) {
+  if (ptr) {
+    ptr->Release();
+    ptr = nullptr;
+  }
+}
+
 void ReleaseAlloc(DXAlloc& alloc) {
-  if (alloc.resource) {
-    alloc.resource->Release();
-    alloc.resource = nullptr;
+  ReleaseInterface(alloc.resource);
+}
+
+void CopyOutputChunk(void* dst, const void* src, size_t offset_elements,
+                     size_t count_elements, size_t element_size) {
+  std::memcpy(static_cast<char*>(dst) + offset_elements * element_size, src,
+              count_elements * element_size);
+}
+
+void IgnoreOrtStatus(OrtStatus* status) {
+  if (status) {
+    OrtGetApiBase()->GetApi(ORT_API_VERSION)->ReleaseStatus(status);
   }
 }
 
@@ -94,19 +111,6 @@ IDMLDevice* CreateDmlDevice(ID3D12Device* device) {
   ReportDxErrors(GetDmlCreateDeviceFn()(
       device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&dml_device)));
   return dml_device;
-}
-
-template <typename DataType>
-void CopyOutputChunk(void* dst, const void* src, size_t offset_elements,
-                     size_t count_elements) {
-  std::memcpy(static_cast<char*>(dst) + offset_elements * sizeof(DataType), src,
-              count_elements * sizeof(DataType));
-}
-
-void IgnoreOrtStatus(OrtStatus* status) {
-  if (status) {
-    OrtGetApiBase()->GetApi(ORT_API_VERSION)->ReleaseStatus(status);
-  }
 }
 
 }  // namespace
@@ -240,7 +244,7 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
   const int wdl_head = network->wdl_head_;
   const int policy_head = network->policy_head_;
   const int mlh_head = network->mlh_head_;
-  const int data_size = (network->fp16_ || network->bf16_) ? 2 : 4;
+  const size_t data_size = (network->fp16_ || network->bf16_) ? 2 : 4;
   const int outputs_size =
       std::max({value_head, wdl_head, policy_head, mlh_head}) + 1;
 
@@ -261,12 +265,12 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
 
   network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
                                        sizeof(uint64_t),
-                                   D3D12_HEAP_TYPE_UPLOAD, input_masks_mem_gpu_,
-                                   false);
+                                   D3D12_HEAP_TYPE_UPLOAD,
+                                   input_masks_mem_gpu_, false);
   network->dx_context_.CreateAlloc(max_batch_size * kInputPlanes *
                                        sizeof(float),
-                                   D3D12_HEAP_TYPE_UPLOAD, input_val_mem_gpu_,
-                                   false);
+                                   D3D12_HEAP_TYPE_UPLOAD,
+                                   input_val_mem_gpu_, false);
   network->dx_context_.CreateAlloc(
       max_batch_size * kInputPlanes * 8 * 8 * data_size,
       D3D12_HEAP_TYPE_DEFAULT, input_tensor_gpu_,
@@ -282,7 +286,7 @@ DmlInputsOutputs::DmlInputsOutputs(DmlDxNetwork* network)
   for (int i = 0; i < outputs_size; i++) {
     if (output_tensors_step_[i] == 0) continue;
     output_tensors_data_[i] =
-        malloc(max_batch_size * output_tensors_step_[i] * data_size);
+        std::malloc(max_batch_size * output_tensors_step_[i] * data_size);
     network->dx_context_.CreateAlloc(
         max_batch_size * output_tensors_step_[i] * data_size,
         D3D12_HEAP_TYPE_CUSTOM, output_tensors_gpu_[i],
@@ -323,7 +327,7 @@ DmlInputsOutputs::~DmlInputsOutputs() {
   ReleaseAlloc(input_masks_mem_gpu_);
   ReleaseAlloc(input_val_mem_gpu_);
   for (auto& alloc : output_tensors_gpu_) ReleaseAlloc(alloc);
-  for (void* ptr : output_tensors_data_) free(ptr);
+  for (void* ptr : output_tensors_data_) std::free(ptr);
 }
 
 template <typename DataType>
@@ -407,10 +411,11 @@ void DmlDxComputation<DataType>::CopyOutputs(int start, int batch_size) {
   for (size_t i = 0; i < inputs_outputs_->output_tensors_step_.size(); i++) {
     const size_t stride = inputs_outputs_->output_tensors_step_[i];
     if (stride == 0) continue;
-    CopyOutputChunk<DataType>(inputs_outputs_->output_tensors_data_[i],
-                              inputs_outputs_->output_tensors_gpu_mapped_[i],
-                              static_cast<size_t>(start) * stride,
-                              static_cast<size_t>(batch_size) * stride);
+    CopyOutputChunk(inputs_outputs_->output_tensors_data_[i],
+                    inputs_outputs_->output_tensors_gpu_mapped_[i],
+                    static_cast<size_t>(start) * stride,
+                    static_cast<size_t>(batch_size) * stride,
+                    sizeof(DataType));
   }
 }
 
