@@ -79,6 +79,11 @@ inline bool GzGetLine(gzFile file, std::string& line) {
 //   variation  := '(' movetext ')'
 class PgnReader {
  public:
+  // If split_variations is true, every variation is additionally returned as a
+  // separate game, continuing from the position before the move it replaces.
+  explicit PgnReader(bool split_variations = false)
+      : split_variations_(split_variations) {}
+
   void AddPgnFile(const std::string& filepath) {
     const gzFile file = gzopen(filepath.c_str(), "r");
     if (!file) {
@@ -248,6 +253,7 @@ class PgnReader {
     cur_startpos_ = ChessBoard::kStartposFen;
     cur_board_.SetFromFen(cur_startpos_);
     cur_game_.clear();
+    has_prev_ = false;
     while (Peek().type == TokenType::kLBracket) {
       ParseTag();
       seen_anything = true;
@@ -309,7 +315,7 @@ class PgnReader {
           const std::string sym = Next().text;
           if (IsResult(sym)) {
             if (main_line) return true;
-          } else if (main_line) {
+          } else if (main_line || split_variations_) {
             ParseSymbol(sym);
           }
           break;
@@ -324,7 +330,29 @@ class PgnReader {
 
   void ParseVariation() {
     Next();  // '('
-    ParseMovetext(false);
+    if (!split_variations_) {
+      ParseMovetext(false);
+    } else {
+      const ChessBoard saved_board = cur_board_;
+      const MoveList saved_game = cur_game_;
+      const ChessBoard saved_prev = prev_board_;
+      const bool saved_has_prev = has_prev_;
+      if (has_prev_ && !cur_game_.empty()) {
+        // The variation replaces the last move.
+        cur_board_ = prev_board_;
+        cur_game_.pop_back();
+        has_prev_ = false;
+        const size_t base = cur_game_.size();
+        ParseMovetext(false);
+        if (cur_game_.size() > base) games_.push_back({cur_startpos_, cur_game_});
+      } else {
+        ParseMovetext(false);
+      }
+      cur_board_ = saved_board;
+      cur_game_ = saved_game;
+      prev_board_ = saved_prev;
+      has_prev_ = saved_has_prev;
+    }
     if (Peek().type == TokenType::kRParen) Next();
   }
 
@@ -350,6 +378,8 @@ class PgnReader {
                       sym + "': " + e.what());
     }
     const bool black = cur_board_.flipped();
+    prev_board_ = cur_board_;
+    has_prev_ = true;
     cur_board_.ApplyMove(m);
     // Board ApplyMove wants mirrored for black, but outside code wants
     // normal, so mirror it back again.
@@ -473,6 +503,9 @@ class PgnReader {
   Token token_;
   bool has_token_ = false;
   int game_number_ = 0;
+  bool split_variations_ = false;
+  ChessBoard prev_board_{ChessBoard::kStartposFen};
+  bool has_prev_ = false;
 
   ChessBoard cur_board_{ChessBoard::kStartposFen};
   MoveList cur_game_;

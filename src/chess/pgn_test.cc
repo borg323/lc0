@@ -88,6 +88,16 @@ TEST(Pgn, BlackToMoveFen) {
   EXPECT_EQ(g.size(), 1u);
 }
 
+TEST(Pgn, SplitVariations) {
+  PgnReader r(true);
+  r.AddPgnString("1.e4 e5 (1... c5 2. Nf3 (2. Nc3 d6) 2... d6) 2. Nf3 Nc6 *");
+  auto g = r.GetGames();
+  ASSERT_EQ(g.size(), 3u);
+  EXPECT_EQ(Moves(g[0]), "e2e4 c7c5 b1c3 d7d6");
+  EXPECT_EQ(Moves(g[1]), "e2e4 c7c5 g1f3 d7d6");
+  EXPECT_EQ(Moves(g[2]), "e2e4 e7e5 g1f3 b8c6");
+}
+
 TEST(Pgn, Illegal) {
   EXPECT_THROW(Parse("1. e5 *"), Exception);
 }
