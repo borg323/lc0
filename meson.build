@@ -1088,6 +1088,11 @@ if get_option('gtest')
     include_directories: includes, link_with: lc0_lib, dependencies: gtest
   ), args: '--gtest_output=xml:chessboard.xml', timeout: 90)
 
+  test('PgnTest',
+    executable('pgn_test', 'src/chess/pgn_test.cc',
+    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+  ), args: '--gtest_output=xml:pgn.xml', timeout: 90)
+
   test('FP16',
     executable('fp16_test', 'src/utils/fp16_utils_test.cc',
     include_directories: includes, link_with: lc0_lib, dependencies: gtest
