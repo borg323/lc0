@@ -933,10 +933,11 @@ endif
   if host_machine.system() == 'windows'
     # In several cases where a zlib dependency was detected on windows, it
     # caused trouble (crashes or failed builds). Better safe than sorry.
-    deps += subproject('zlib').get_variable('zlib_dep')
+    zlib_dep = subproject('zlib').get_variable('zlib_dep')
   else
-    deps += dependency('zlib', fallback: ['zlib', 'zlib_dep'])
+    zlib_dep = dependency('zlib', fallback: ['zlib', 'zlib_dep'])
   endif
+  deps += zlib_dep
 
   trace_lib = get_option('trace_library')
   trace_config = configuration_data()
@@ -1090,7 +1091,7 @@ if get_option('gtest')
 
   test('PgnTest',
     executable('pgn_test', 'src/chess/pgn_test.cc',
-    include_directories: includes, link_with: lc0_lib, dependencies: gtest
+    include_directories: includes, link_with: lc0_lib, dependencies: [gtest, zlib_dep]
   ), args: '--gtest_output=xml:pgn.xml', timeout: 90)
 
   test('FP16',
